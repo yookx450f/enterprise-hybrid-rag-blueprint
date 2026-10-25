@@ -3,12 +3,14 @@
 Phase 3: Naive RAG との違いを劇的にDemonstratingする核心モジュール
 """
 
+import asyncio
 import time
 import httpx
+from typing import AsyncGenerator
 from janome.tokenizer import Tokenizer as JanomeTokenizer
 from rank_bm25 import BM25Okapi
 from config import settings
-from rag_engine import get_chroma_client, embed_texts_ollama
+from rag_engine import PipelineStep, get_chroma_client, embed_texts_ollama
 
 
 # ─── 日本語トークナイズ ─────────────────────────────────────
@@ -103,13 +105,22 @@ async def run_hybrid_rag(
     if llm_model is None:
         llm_model = settings.LLM_MODEL
 
-    # ── Step 1: Metadata Pre-filtering ──────────────
+    steps: list[PipelineStep] = []
+
+    # ── Step 0: クエリベクトル化 ───────────────────────
+    t0 = time.time()
     client = get_chroma_client()
     collection = client.get_collection(
         name="b2b_tenant_rules",
         embedding_function=None,
     )
+    total_count = collection.count()
 
+    query_embeddings = await embed_texts_ollama([query])
+    embed_ms = int((time.time() - t0) * 1000)
+    steps.append(PipelineStep("embed", "クエリベクトル化", "done", embed_ms, f"モデル: {settings.EMBED_MODEL}"))
+
+    # ── Step 1: Metadata Pre-filtering ────────────────
     metadata_filter = {
         "$and": [
             {"tenant_id": {"$eq": tenant_id}},
@@ -117,33 +128,48 @@ async def run_hybrid_rag(
         ]
     }
 
-    # クエリをOllamaでベクトル化
-    query_embeddings = await embed_texts_ollama([query])
-
-    # ベクトル検索（メタデータフィルタ付き、Top-10候補取得）
+    t0 = time.time()
     vec_results = collection.query(
         query_embeddings=query_embeddings,
         n_results=10,
         where=metadata_filter,
     )
+    filter_ms = int((time.time() - t0) * 1000)
 
     vec_ids = vec_results.get("ids", [[]])[0]
     vec_docs = vec_results.get("documents", [[]])[0]
     vec_metas = vec_results.get("metadatas", [[]])[0]
     vec_distances = vec_results.get("distances", [[]])[0]
 
+    steps.append(PipelineStep(
+        "meta_filter", "メタデータフィルタ", "done", filter_ms,
+        detail=f"tenant={tenant_id}, year>={min_year}",
+        count_before=total_count,
+        count_after=len(vec_ids),
+    ))
+
     if not vec_ids:
+        steps.append(PipelineStep("bm25", "BM25キーワードスコアリング", "skipped", detail="候補なしでスキップ"))
+        steps.append(PipelineStep("rerank", "RRF統合リランキング", "skipped", detail="候補なしでスキップ"))
         return {
             "answer": "該当する情報がデータベースに見つかりませんでした。",
             "chunks": [],
             "inference_time_ms": 0,
             "prompt_length": 0,
+            "pipeline_steps": [s.to_dict() for s in steps],
         }
 
-    # ── Step 2: BM25 キーワードスコアリング ──────────
+    # ── Step 2: BM25 キーワードスコアリング ────────────
+    t0 = time.time()
     query_tokens = tokenize_ja(query)
     doc_token_lists = [tokenize_ja(doc) for doc in vec_docs]
     bm25_scores = compute_bm25_scores(query_tokens, doc_token_lists)
+    bm25_ms = int((time.time() - t0) * 1000)
+
+    steps.append(PipelineStep(
+        "bm25", "BM25キーワードスコアリング", "done", bm25_ms,
+        detail=f"クエリトークン数: {len(query_tokens)} / Janome形態素解析",
+    ))
 
     # BM25スコアでソートしたIDリスト（降順＝スコア高的順）
     bm25_ranked_ids = [
@@ -151,8 +177,17 @@ async def run_hybrid_rag(
         for i in sorted(range(len(bm25_scores)), key=lambda i: -bm25_scores[i])
     ]
 
-    # ── Step 3: RRF 統合リランキング ────────────────
+    # ── Step 3: RRF 統合リランキング ──────────────────
+    t0 = time.time()
     rrf_ranks = rrf_rerank(vec_ids, bm25_ranked_ids)
+    rrf_ms = int((time.time() - t0) * 1000)
+
+    steps.append(PipelineStep(
+        "rerank", "RRF統合リランキング", "done", rrf_ms,
+        detail=f"vec({len(vec_ids)}件) + BM25({len(bm25_ranked_ids)}件) RRF統合 → Top-3",
+        count_before=len(vec_ids),
+        count_after=3,
+    ))
 
     # 上位3件のチャンクを選定（情報付きで整形）
     selected_chunks = []
@@ -172,7 +207,7 @@ async def run_hybrid_rag(
             "distance": vec_distances[idx],
         })
 
-    # ── Step 4: 構造化プロンプトでLLM回答生成 ────────
+    # ── Step 4: 構造化プロンプトでLLM回答生成 ───────────
     context_parts = []
     for c in selected_chunks:
         context_parts.append(
@@ -213,9 +248,226 @@ async def run_hybrid_rag(
     inference_time_ms = int((time.time() - start_time) * 1000)
     prompt_length = len(prompt)
 
+    steps.append(PipelineStep("llm", "LLM推論", "done", inference_time_ms, f"モデル: {llm_model}"))
+
     return {
         "answer": data.get("response", ""),
         "chunks": selected_chunks,
         "inference_time_ms": inference_time_ms,
         "prompt_length": prompt_length,
+        "pipeline_steps": [s.to_dict() for s in steps],
     }
+
+
+async def stream_hybrid_rag(
+    query: str,
+    tenant_id: str = "A社_都市型",
+    min_year: int = 2025,
+    llm_model: str | None = None,
+) -> AsyncGenerator[dict, None]:
+    """
+    ストリーミング版 Hybrid RAG。
+    各ステップ完了時にイベントを yield する。
+    """
+    if llm_model is None:
+        llm_model = settings.LLM_MODEL
+
+    # ── Step 0: クエリベクトル化 ───────────────────────
+    yield {"type": "step_start", "step_id": "embed", "name": "クエリベクトル化"}
+    t0 = time.time()
+    client = get_chroma_client()
+    collection = client.get_collection(
+        name="b2b_tenant_rules",
+        embedding_function=None,
+    )
+    total_count = collection.count()
+
+    query_embeddings = await embed_texts_ollama([query])
+    embed_ms = int((time.time() - t0) * 1000)
+    yield {
+        "type": "step_done",
+        "step_id": "embed",
+        "duration_ms": embed_ms,
+        "detail": f"モデル: {settings.EMBED_MODEL}",
+    }
+
+    # ── Step 1: Metadata Pre-filtering ────────────────
+    yield {"type": "step_start", "step_id": "meta_filter", "name": "メタデータフィルタ"}
+    metadata_filter = {
+        "$and": [
+            {"tenant_id": {"$eq": tenant_id}},
+            {"effective_year": {"$gte": min_year}},
+        ]
+    }
+
+    t0 = time.time()
+    vec_results = collection.query(
+        query_embeddings=query_embeddings,
+        n_results=10,
+        where=metadata_filter,
+    )
+    filter_ms = int((time.time() - t0) * 1000)
+
+    vec_ids = vec_results.get("ids", [[]])[0]
+    vec_docs = vec_results.get("documents", [[]])[0]
+    vec_metas = vec_results.get("metadatas", [[]])[0]
+    vec_distances = vec_results.get("distances", [[]])[0]
+
+    yield {
+        "type": "step_done",
+        "step_id": "meta_filter",
+        "duration_ms": filter_ms,
+        "detail": f"tenant={tenant_id}, year>={min_year}",
+        "count_before": total_count,
+        "count_after": len(vec_ids),
+    }
+
+    if not vec_ids:
+        yield {
+            "type": "step_done",
+            "step_id": "bm25",
+            "duration_ms": 0,
+            "status": "skipped",
+            "detail": "候補なしでスキップ",
+        }
+        yield {
+            "type": "step_done",
+            "step_id": "rerank",
+            "duration_ms": 0,
+            "status": "skipped",
+            "detail": "候補なしでスキップ",
+        }
+        yield {
+            "type": "answer",
+            "answer": "該当する情報がデータベースに見つかりませんでした。",
+            "inference_time_ms": 0,
+        }
+        yield {"type": "done"}
+        return
+
+    # ── Step 2: BM25 キーワードスコアリング ────────────
+    yield {"type": "step_start", "step_id": "bm25", "name": "BM25キーワードスコアリング"}
+    t0 = time.time()
+    query_tokens = tokenize_ja(query)
+    doc_token_lists = [tokenize_ja(doc) for doc in vec_docs]
+    bm25_scores = compute_bm25_scores(query_tokens, doc_token_lists)
+    bm25_ms = int((time.time() - t0) * 1000)
+
+    yield {
+        "type": "step_done",
+        "step_id": "bm25",
+        "duration_ms": bm25_ms,
+        "detail": f"クエリトークン数: {len(query_tokens)} / Janome形態素解析",
+    }
+
+    # BM25スコアでソートしたIDリスト（降順＝スコア高的順）
+    bm25_ranked_ids = [
+        vec_ids[i]
+        for i in sorted(range(len(bm25_scores)), key=lambda i: -bm25_scores[i])
+    ]
+
+    # ── Step 3: RRF 統合リランキング ──────────────────
+    yield {"type": "step_start", "step_id": "rerank", "name": "RRF統合リランキング"}
+    t0 = time.time()
+    rrf_ranks = rrf_rerank(vec_ids, bm25_ranked_ids)
+    rrf_ms = int((time.time() - t0) * 1000)
+
+    yield {
+        "type": "step_done",
+        "step_id": "rerank",
+        "duration_ms": rrf_ms,
+        "detail": f"vec({len(vec_ids)}件) + BM25({len(bm25_ranked_ids)}件) RRF統合 → Top-3",
+        "count_before": len(vec_ids),
+        "count_after": 3,
+    }
+
+    # 上位3件のチャンクを選定（情報付きで整形）
+    selected_chunks = []
+    for doc_id, rrf_score in rrf_ranks[:3]:
+        idx = vec_ids.index(doc_id)
+        vec_rank = vec_ids.index(doc_id) + 1
+        bm25_rank = bm25_ranked_ids.index(doc_id) + 1
+        selected_chunks.append({
+            "id": doc_id,
+            "title": vec_metas[idx].get("title", ""),
+            "tenant_id": vec_metas[idx].get("tenant_id", ""),
+            "effective_year": vec_metas[idx].get("effective_year"),
+            "text": vec_docs[idx],
+            "vector_rank": vec_rank,
+            "bm25_rank": bm25_rank,
+            "rrf_score": round(rrf_score, 6),
+            "distance": vec_distances[idx],
+        })
+
+    # ── チャンクプレビュー送信 ─────────────────────────
+    preview_chunks = []
+    for c in selected_chunks:
+        text_preview = c["text"][:100] + "..." if len(c["text"]) > 100 else c["text"]
+        preview_chunks.append({
+            "id": c["id"],
+            "title": c["title"],
+            "text_preview": text_preview,
+            "vector_rank": c["vector_rank"],
+            "bm25_rank": c["bm25_rank"],
+            "rrf_score": c["rrf_score"],
+        })
+    yield {"type": "chunk_preview", "chunks": preview_chunks}
+
+    # ── Step 4: 構造化プロンプトでLLM回答生成 ───────────
+    context_parts = []
+    for c in selected_chunks:
+        context_parts.append(
+            f"[{c['title']} ({c['tenant_id']}, {c['effective_year']})]\n{c['text']}"
+        )
+    context_text = "\n\n---\n\n".join(context_parts)
+
+    prompt = (
+        "あなたは不動産管理SaaSの業務アシスタントです。"
+        "以下の参考情報に基づいて、質問に的確に回答してください。\n\n"
+        "=== 参考情報 ===\n"
+        f"{context_text}\n\n"
+        "=== 質問 ===\n"
+        f"{query}\n\n"
+        "=== 回答フォーマット ===\n"
+        "以下の4項目を明確に回答してください：\n"
+        "① 審査可否の結論\n"
+        "② 特例適用の必須条件\n"
+        "③ 過去トラブル事例を踏まえた審査時の注意点\n"
+        "④ 根拠とした規定タイトル\n\n"
+        "参考情報に含まれていない場合は、「該当する情報が参考資料に見つかりませんでした」と回答してください。"
+    )
+
+    yield {"type": "step_start", "step_id": "llm", "name": "LLM推論"}
+    start_time = time.time()
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{settings.OLLAMA_BASE_URL}/api/generate",
+            json={
+                "model": llm_model,
+                "prompt": prompt,
+                "stream": False,
+            },
+            timeout=120.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+    inference_time_ms = int((time.time() - start_time) * 1000)
+    yield {
+        "type": "step_done",
+        "step_id": "llm",
+        "duration_ms": inference_time_ms,
+        "detail": f"モデル: {llm_model}",
+    }
+
+    answer = data.get("response", "")
+    # 回答を複数チャンクに分割してストリーミング表示
+    chunk_size = 50
+    for i in range(0, len(answer), chunk_size):
+        yield {
+            "type": "answer_chunk",
+            "text": answer[i:i + chunk_size],
+            "inference_time_ms": inference_time_ms,
+        }
+
+    yield {"type": "done"}

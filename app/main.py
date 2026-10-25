@@ -3,16 +3,18 @@ FastAPI アプリケーション（Phase 1 + Phase 2 + Phase 3 + Phase 4）
 """
 
 import asyncio
+import json
 import httpx
 from pydantic import BaseModel, Field
 from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from config import settings
 
 from seed_data import seed_all_data
-from rag_engine import run_naive_rag
-from search_engine import run_hybrid_rag
+from rag_engine import run_naive_rag, stream_naive_rag
+from search_engine import run_hybrid_rag, stream_hybrid_rag
 from daily_summary import run_daily_summary
 from collection_browser import query_collection, get_unique_values
 
@@ -141,6 +143,80 @@ async def compare_rag_endpoint(req: CompareRAGRequest):
         }
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
+# ─── Phase 3: ストリーミング比較エンドポイント ──────────
+
+@app.post("/api/compare_rag_stream")
+async def compare_rag_stream(req: CompareRAGRequest):
+    """
+    ストリーミング版比較API。
+    両エンジンのパイプライン進行をSSEでリアルタイム送信。
+    """
+    async def event_generator():
+        naive_gen = stream_naive_rag(query=req.query, llm_model=req.llm_model)
+        hybrid_gen = stream_hybrid_rag(
+            query=req.query,
+            tenant_id=req.tenant_id,
+            min_year=req.min_year,
+            llm_model=req.llm_model,
+        )
+
+        # 両ジェネレーターをキューにフィードする
+        naive_q: asyncio.Queue[dict | None] = asyncio.Queue()
+        hybrid_q: asyncio.Queue[dict | None] = asyncio.Queue()
+
+        async def fill_queue(gen, queue):
+            try:
+                async for event in gen:
+                    await queue.put(event)
+            except Exception as e:
+                await queue.put({"type": "error", "message": str(e)})
+            finally:
+                await queue.put(None)  # 終端マーカー
+
+        asyncio.create_task(fill_queue(naive_gen, naive_q))
+        asyncio.create_task(fill_queue(hybrid_gen, hybrid_q))
+
+        done_naive = False
+        done_hybrid = False
+
+        while not (done_naive and done_hybrid):
+            # キューが両方空なら少し待つ
+            if naive_q.empty() and hybrid_q.empty():
+                await asyncio.sleep(0.05)
+                continue
+
+            # Naive キューから消费
+            if not naive_q.empty():
+                event = naive_q.get_nowait()
+                if event is None:
+                    done_naive = True
+                else:
+                    event["engine"] = "naive"
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+            # Hybrid キューから消费
+            if not hybrid_q.empty():
+                event = hybrid_q.get_nowait()
+                if event is None:
+                    done_hybrid = True
+                else:
+                    event["engine"] = "hybrid"
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+        # 全完了
+        yield f'data: {json.dumps({"type": "all_done"}, ensure_ascii=False)}\n\n'
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 # ─── Phase 3: 日次要約エンドポイント ─────────────────────

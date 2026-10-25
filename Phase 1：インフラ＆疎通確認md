@@ -1,0 +1,55 @@
+Phase 1：インフラ＆疎通確認（Docker 2コンテナ ＋ 外部Ollama接続）
+まずはRAGロジックや画面を作らず、**「Dockerコンテナが綺麗に立ち上がり、ChromaDBとホスト側のOllamaに確実に繋がる土台」**だけを作ります。
+1-1. ZOO CODE 投入用プロンプト（Phase 1）
+空のプロジェクトフォルダ（例：enterprise-hybrid-rag-blueprint）をVS Codeで開き、ZOO CODEに以下を貼り付けて実行してください。【Phase 1：最小インフラ＆疎通確認の実装】
+
+これから4フェーズに分けてアジャイル方式で「ローカルLLM＋ハイブリッドRAG業務デモ基盤」を構築します。
+
+まずは Phase 1 として、RAGロジックやHTML画面は作らず、以下の最小構成ファイルのみを作成してください。
+
+## Phase 1 のスコープと仕様
+
+1. `docker-compose.yml`
+
+   - `chromadb`: 公式 `chromadb/chroma:0.5.20`（または安定版）イメージ、ポート `8000:8000`、データ永続化ボリューム。
+
+   - `app`: `./app` をビルド、ポート `8080:8080`、`./app:/app` のボリュームマウント（ホットリロード用）、`extra_hosts: ["host.docker.internal:host-gateway"]` を設定してホストOSのOllamaへアクセス可能にする。
+
+2. `.env`
+
+   - `OLLAMA_BASE_URL=http://host.docker.internal:11434`
+
+   - `LLM_MODEL=gemma4:31b`
+
+   - `EMBED_MODEL=bge-m3`
+
+   - `CHROMA_HOST=chromadb`
+
+   - `CHROMA_PORT=8000`
+
+3. `app/Dockerfile` と `app/requirements.txt`
+
+   - Python 3.12-slim ベース。
+
+   - 後続フェーズでも使うため、`fastapi`, `uvicorn[standard]`, `httpx`, `pydantic-settings`, `chromadb-client` (または `chromadb`), `janome`, `rank-bm25`, `jinja2`, `python-multipart` を `requirements.txt` に記載してインストール。
+
+4. `app/config.py` と `app/main.py`
+
+   - 環境変数を読み込む `config.py` を作成。
+
+   - `app/main.py` には `GET /api/health` エンドポイントのみを実装してください。
+
+   - `/api/health` の処理内容：
+
+     1. ChromaDB（`http://chromadb:8000/api/v1/heartbeat` またはクライアント接続）の疎通確認。
+
+     2. Ollama（`${OLLAMA_BASE_URL}/api/tags`）へHTTPリクエストを送り、疎通確認および現在インストールされているモデル名の一覧を取得。
+
+     3. `{ "status": "ok", "chromadb": "connected", "ollama_url": "...", "ollama_status": "connected", "available_models": [...] }` のJSONを返す（エラー時はどこで失敗したか分かるメッセージを返す）。
+
+※Phase 1ではこれ以外のファイル（`seed_data.py` や `rag_engine.py` 等）はまだ作らないでください。
+1-2. Phase 1 の動作確認ゲート
+ホスト（Windows）側で Ollama が起動していることを確認し、ターミナルで ollama pull bge-m3 を実行しておきます。
+VS Codeのターミナルで以下を実行します：docker compose up -d --build
+ブラウザまたはターミナルで http://localhost:8080/api/health にアクセスします。
+成功条件： "chromadb": "connected", "ollama_status": "connected" と表示され、available_models に自分のWindows機に入っているOllamaモデル一覧が表示されれば Phase 1 クリアです！（ここで git init && git add . && git commit -m "Phase 1: Docker & Ollama/Chroma connectivity" しておくと完璧です）

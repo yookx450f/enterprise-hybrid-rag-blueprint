@@ -5,7 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Enterprise Hybrid RAG Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="/static/css/dashboard.css">
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <link rel="stylesheet" href="/static/css/dashboard.css?v=3">
     <script>
         tailwind.config = { darkMode: 'class' }
     </script>
@@ -80,24 +81,30 @@
         </div>
 
         <!-- 2カラム比較結果 -->
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-5" id="compare-results">
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-5 items-start" id="compare-results">
             <!-- Naive RAG -->
-            <div class="bg-slate-900 border border-red-900/40 rounded-xl overflow-hidden">
-                <div class="bg-red-950/40 px-4 py-2 border-b border-red-900/30 flex items-center justify-between">
+            <div class="bg-slate-900 border border-red-900/40 rounded-xl overflow-hidden flex flex-col">
+                <div class="bg-red-950/40 px-4 py-2 border-b border-red-900/30 flex items-center justify-between shrink-0">
                     <span class="font-semibold text-red-400 text-sm">⚠️ Naive RAG（単純ベクトル検索）</span>
-                    <span id="naive-meta" class="text-xs text-slate-500"></span>
+                    <div class="flex items-center gap-2">
+                        <span class="pipeline-comparison-badge badge-naive">フィルタ× / BM25× / RRF×</span>
+                        <span id="naive-meta" class="text-xs text-slate-500"></span>
+                    </div>
                 </div>
-                <div id="naive-body" class="p-4 space-y-3 min-h-[120px]">
+                <div id="naive-body" class="p-4 space-y-3 comparison-panel-body">
                     <p class="text-slate-600 text-sm italic">検索を実行すると結果が表示されます</p>
                 </div>
             </div>
             <!-- Hybrid RAG -->
-            <div class="bg-slate-900 border border-emerald-900/40 rounded-xl overflow-hidden">
-                <div class="bg-emerald-950/40 px-4 py-2 border-b border-emerald-900/30 flex items-center justify-between">
+            <div class="bg-slate-900 border border-emerald-900/40 rounded-xl overflow-hidden flex flex-col">
+                <div class="bg-emerald-950/40 px-4 py-2 border-b border-emerald-900/30 flex items-center justify-between shrink-0">
                     <span class="font-semibold text-emerald-400 text-sm">✅ Architected Hybrid RAG</span>
-                    <span id="hybrid-meta" class="text-xs text-slate-500"></span>
+                    <div class="flex items-center gap-2">
+                        <span class="pipeline-comparison-badge badge-hybrid">フィルタ✓ / BM25✓ / RRF✓</span>
+                        <span id="hybrid-meta" class="text-xs text-slate-500"></span>
+                    </div>
                 </div>
-                <div id="hybrid-body" class="p-4 space-y-3 min-h-[120px]">
+                <div id="hybrid-body" class="p-4 space-y-3 comparison-panel-body">
                     <p class="text-slate-600 text-sm italic">検索を実行すると結果が表示されます</p>
                 </div>
             </div>
@@ -255,6 +262,6 @@
 <!-- トースト -->
 <div id="toast" class="toast"></div>
 
-<script src="/static/js/dashboard.js"></script>
+<script src="/static/js/dashboard.js?v=4"></script>
 </body>
 </html>
