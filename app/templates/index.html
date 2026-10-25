@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="ja" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Enterprise Hybrid RAG Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="/static/css/dashboard.css">
+    <script>
+        tailwind.config = { darkMode: 'class' }
+    </script>
+</head>
+<body class="bg-slate-950 text-slate-200 min-h-screen flex flex-col">
+
+<!-- ===== ヘッダー ===== -->
+<header class="border-b border-slate-800 bg-slate-900/80 backdrop-blur sticky top-0 z-40">
+    <div class="max-w-7xl mx-auto px-4 py-3">
+        <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+            <div>
+                <h1 class="text-xl font-bold bg-gradient-to-r from-blue-400 to-emerald-400 bg-clip-text text-transparent">
+                    Enterprise Local LLM & Hybrid RAG Reference Architecture
+                </h1>
+                <p class="text-xs text-slate-500 mt-0.5">FastAPI + ChromaDB + Janome BM25 + Ollama (External Endpoint)</p>
+            </div>
+            <div id="status-bar" class="flex items-center gap-3 text-sm">
+                <span id="health-dot" class="inline-block w-2.5 h-2.5 rounded-full bg-yellow-500 animate-pulse"></span>
+                <span id="health-text" class="text-slate-400">接続確認中...</span>
+                <select id="model-select" class="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs hidden">
+                    <option value="">モデルを選択...</option>
+                </select>
+                <button id="seed-btn" class="ml-2 bg-blue-600 hover:bg-blue-500 text-white text-xs px-3 py-1.5 rounded transition">
+                    🔄 業務サンプルデータ初期化
+                </button>
+            </div>
+        </div>
+    </div>
+</header>
+
+<!-- ===== タブナビ ===== -->
+<nav class="bg-slate-900 border-b border-slate-800">
+    <div class="max-w-7xl mx-auto px-4 flex gap-1" id="tab-nav">
+        <button data-tab="compare" class="tab-btn active px-4 py-3 text-sm font-medium border-b-2 border-blue-500 text-blue-400">🔍 単純RAG vs ハイブリッドRAG</button>
+        <button data-tab="summary" class="tab-btn px-4 py-3 text-sm font-medium border-b-2 border-transparent text-slate-500 hover:text-slate-300 transition">📊 日次要約バッチ（BPRデモ）</button>
+        <button data-tab="browser" class="tab-btn px-4 py-3 text-sm font-medium border-b-2 border-transparent text-slate-500 hover:text-slate-300 transition">📦 データブラウザ</button>
+        <button data-tab="arch" class="tab-btn px-4 py-3 text-sm font-medium border-b-2 border-transparent text-slate-500 hover:text-slate-300 transition">🏗️ アーキテクチャ設計思想</button>
+    </div>
+</nav>
+
+<!-- ===== メインエリア ===== -->
+<main class="flex-1 max-w-7xl mx-auto px-4 py-6 w-full">
+
+    <!-- Tab 1: 比較デモ -->
+    <section id="tab-compare" class="tab-content space-y-5">
+        <!-- 検索バー -->
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 grid grid-cols-1 md:grid-cols-[1fr_1fr_200px] gap-3 items-end">
+            <div>
+                <label class="block text-xs text-slate-500 mb-1">テナント</label>
+                <select id="tenant-select" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
+                    <option value="A社_都市型">A社_都市型</option>
+                    <option value="B社_全国賃貸">B社_全国賃貸</option>
+                    <option value="C社_社宅代行">C社_社宅代行</option>
+                </select>
+            </div>
+            <div>
+                <label class="block text-xs text-slate-500 mb-1">有効年度フィルタ</label>
+                <select id="year-select" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
+                    <option value="2025">2025年以降</option>
+                    <option value="2026">2026年以降</option>
+                    <option value="2024">2024年以降</option>
+                </select>
+            </div>
+            <button id="compare-btn" class="bg-emerald-600 hover:bg-emerald-500 text-white font-semibold py-2 px-4 rounded-lg transition flex items-center justify-center gap-2">
+                <span>🚀 比較実行</span>
+            </button>
+        </div>
+        <div>
+            <label class="block text-xs text-slate-500 mb-1">質問文</label>
+            <textarea id="query-input" rows="2" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm resize-none"
+                placeholder="例: A社におけるフリーランス・個人事業主の入居審査の特例条件と、過去の審査トラブル注意点を要約して">A社におけるフリーランス・個人事業主の入居審査の特例条件と、過去の審査トラブル注意点を要約して</textarea>
+        </div>
+
+        <!-- 2カラム比較結果 -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-5" id="compare-results">
+            <!-- Naive RAG -->
+            <div class="bg-slate-900 border border-red-900/40 rounded-xl overflow-hidden">
+                <div class="bg-red-950/40 px-4 py-2 border-b border-red-900/30 flex items-center justify-between">
+                    <span class="font-semibold text-red-400 text-sm">⚠️ Naive RAG（単純ベクトル検索）</span>
+                    <span id="naive-meta" class="text-xs text-slate-500"></span>
+                </div>
+                <div id="naive-body" class="p-4 space-y-3 min-h-[120px]">
+                    <p class="text-slate-600 text-sm italic">検索を実行すると結果が表示されます</p>
+                </div>
+            </div>
+            <!-- Hybrid RAG -->
+            <div class="bg-slate-900 border border-emerald-900/40 rounded-xl overflow-hidden">
+                <div class="bg-emerald-950/40 px-4 py-2 border-b border-emerald-900/30 flex items-center justify-between">
+                    <span class="font-semibold text-emerald-400 text-sm">✅ Architected Hybrid RAG</span>
+                    <span id="hybrid-meta" class="text-xs text-slate-500"></span>
+                </div>
+                <div id="hybrid-body" class="p-4 space-y-3 min-h-[120px]">
+                    <p class="text-slate-600 text-sm italic">検索を実行すると結果が表示されます</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Tab 2: 日次要約バッチ -->
+    <section id="tab-summary" class="tab-content hidden space-y-5">
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-5">
+            <h2 class="text-base font-bold text-amber-400 mb-3">📬 本日の未処理エスカレーションメール（5件）</h2>
+            <div id="emails-preview" class="space-y-2 max-h-60 overflow-y-auto pr-2 mb-4 text-sm text-slate-400"></div>
+            <button id="summary-btn" class="bg-amber-600 hover:bg-amber-500 text-white font-semibold py-2 px-4 rounded-lg transition">⚡ ローカルLLMで一括構造化・要約</button>
+        </div>
+        <div id="summary-result" class="bg-slate-900 border border-slate-800 rounded-xl p-5 hidden">
+            <h3 class="text-sm font-semibold text-emerald-400 mb-3">📋 構造化要約結果</h3>
+            <div id="summary-table" class="overflow-x-auto"></div>
+        </div>
+    </section>
+
+    <!-- Tab 3: データブラウザ -->
+    <section id="tab-browser" class="tab-content hidden space-y-5">
+        <!-- フィルタバー -->
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-4">
+            <div class="flex items-center justify-between mb-3">
+                <h2 class="text-base font-bold text-cyan-400">📦 ChromaDB コレクション ブラウザ</h2>
+                <div id="collection-stats" class="flex gap-3 text-xs text-slate-500"></div>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-[1fr_1fr_1fr_2fr_auto] gap-3 items-end">
+                <div>
+                    <label class="block text-xs text-slate-500 mb-1">テナント</label>
+                    <select id="browser-tenant" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
+                        <option value="">全部</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-500 mb-1">ドキュメントタイプ</label>
+                    <select id="browser-doctype" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
+                        <option value="">全部</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-500 mb-1">有効年度</label>
+                    <select id="browser-year" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
+                        <option value="">全部</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-500 mb-1">テキスト検索</label>
+                    <input type="text" id="browser-search" placeholder="タイトル・本文中から検索..."
+                        class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
+                </div>
+                <button id="browser-search-btn" class="bg-cyan-600 hover:bg-cyan-500 text-white font-semibold py-2 px-4 rounded-lg transition">
+                    🔍 検索
+                </button>
+            </div>
+            <div id="browser-count-bar" class="mt-3 flex items-center justify-between text-xs">
+                <span class="text-slate-500"></span>
+                <button id="browser-clear-btn" class="text-cyan-400 hover:text-cyan-300 transition hidden">✕ フィルタクリア</button>
+            </div>
+        </div>
+
+        <!-- ドキュメント一覧 -->
+        <div id="browser-docs-list" class="space-y-3">
+            <p class="text-slate-600 text-sm italic">フィルタ条件を選択して検索してください</p>
+        </div>
+    </section>
+
+    <!-- Tab 4: アーキテクチャ設計思想 -->
+    <section id="tab-arch" class="tab-content hidden space-y-6">
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-6">
+            <h2 class="text-base font-bold text-blue-400 mb-4">① なぜOllama（推論層）をURL分離した疎結合構成にしているか</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                <div class="space-y-3">
+                    <h3 class="font-semibold text-slate-300">🔗 疎結合の利点</h3>
+                    <ul class="list-disc pl-5 space-y-1 text-slate-400">
+                        <li>Ollamaサーバーを独立スケーリング可能（GPUリソース専有化）</li>
+                        <li>モデル交換がゼロダウンタイムで実施可能</li>
+                        <li>複数アプリから共有して利用効率が向上</li>
+                        <li>Docker Compose内蔵より本格的なK8s / ECS展開へ自然移行</li>
+                    </ul>
+                </div>
+                <div class="space-y-3">
+                    <h3 class="font-semibold text-slate-300">🧠 外部化のアプローチ</h3>
+                    <ul class="list-disc pl-5 space-y-1 text-slate-400">
+                        <li><code class="bg-slate-800 px-1 rounded">OLLAMA_BASE_URL</code> で環境変数から動的指定</li>
+                        <li>同一クラスター内でもホストネットワーク経由で明示的通信経路を確保</li>
+                        <li>本番ではAPI Gateway / Sidecarプロキシに置き換え可能</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-6">
+            <h2 class="text-base font-bold text-purple-400 mb-4">② なぜ日常的な業務規約の更新に QLoRA（ファインチューニング）ではなく Hybrid RAG を採用すべきか</h2>
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead>
+                        <tr class="border-b border-slate-700">
+                            <th class="text-left py-2 px-3 text-slate-400 font-medium">評価軸</th>
+                            <th class="text-center py-2 px-3 text-red-400 font-medium">QLoRA / ファインチューニング</th>
+                            <th class="text-center py-2 px-3 text-emerald-400 font-medium">Hybrid RAG（本構成）</th>
+                        </tr>
+                    </thead>
+                    <tbody class="text-slate-300">
+                        <tr class="border-b border-slate-800/50"><td class="py-2 px-3 font-medium">データ更新頻度</td><td class="text-center py-2 px-3 text-red-400">モデル再学習が必要（数日～数週）</td><td class="text-center py-2 px-3 text-emerald-400">DBへのINSERTだけで即時反映</td></tr>
+                        <tr class="border-b border-slate-800/50"><td class="py-2 px-3 font-medium">マルチテナント対応</td><td class="text-center py-2 px-3 text-red-400">テナント数だけモデルが増殖</td><td class="text-center py-2 px-3 text-emerald-400">メタデータフィルタで1モデル完結</td></tr>
+                        <tr class="border-b border-slate-800/50"><td class="py-2 px-3 font-medium">検索の正確性</td><td class="text-center py-2 px-3 text-red-400">パラメータに埋もれ、根拠提示が困難</td><td class="text-center py-2 px-3 text-emerald-400">参照チャンク＋RRFスコアで完全追跡可能</td></tr>
+                        <tr class="border-b border-slate-800/50"><td class="py-2 px-3 font-medium">導入コスト・運用負荷</td><td class="text-center py-2 px-3 text-red-400">GPUメモリ大容量必須 / 専門知識が必要</td><td class="text-center py-2 px-3 text-emerald-400">既存ベクトルDB＋BM25の追加のみ</td></tr>
+                        <tr><td class="py-2 px-3 font-medium">適材適所</td><td class="text-center py-2 px-3">定型テンプレート生成・トーン調整</td><td class="text-center py-2 px-3 text-emerald-400 font-bold">✅ 知識ベース参照型タスクに最適</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-6">
+            <h2 class="text-base font-bold text-cyan-400 mb-3">📐 全体アーキテクチャ図</h2>
+            <pre class="bg-slate-950 border border-slate-700 rounded-lg p-4 text-xs overflow-x-auto text-cyan-300 leading-relaxed">
+┌─────────────────────────────────────────────────┐
+│                  FastAPI App                     │
+│  ┌──────────────┐   ┌───────────────────────┐   │
+│  │ GET /        │   │ POST /api/compare_rag  │   │
+│  │ (index.html) │   │                        │   │
+│  └──────────────┘   │  ┌─────────┐ ┌───────┐ │   │
+│                      │  │ Naive   │ │ Hybrid│ │   │
+│                      │  │ RAG     │ │ RAG   │ │   │
+│                      │  └────┬────┘ └───┬───┘ │   │
+│                      │       │         │      │   │
+│                      │  ┌────▼─────────▼────┐ │   │
+│                      │  │   ChromaDB        │ │   │
+│                      │  │ (ベクトルDB+メタ)   │ │   │
+│                      │  └───────────────────┘ │   │
+│                      │                         │   │
+│                      │  ┌───────────────────┐  │   │
+│                      │  │ Janome + BM25Okapi│  │   │
+│                      │  │  (キーワード検索)   │  │   │
+│                      │  └───────────────────┘  │   │
+└──────────────────────┼─────────────────────────┘
+                       │ HTTP / host.docker.internal
+                       ▼
+              ┌────────────────────┐
+              │    Ollama Server   │
+              │  /api/generate     │
+              │  /api/embed        │
+              │  (qwen27b-zoo)     │
+              └────────────────────┘</pre>
+        </div>
+    </section>
+</main>
+
+<!-- フッター -->
+<footer class="border-t border-slate-800 bg-slate-900 py-3 text-center text-xs text-slate-600">
+    Enterprise Hybrid RAG Blueprint &copy; 2026 &middot; Local LLM Powered by Ollama
+</footer>
+
+<!-- トースト -->
+<div id="toast" class="toast"></div>
+
+<script src="/static/js/dashboard.js"></script>
+</body>
+</html>
