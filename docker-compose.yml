@@ -1,6 +1,8 @@
 services:
   chromadb:
     image: chromadb/chroma:0.5.20
+    environment:
+      - CHROMA_PERSIST_DIRECTORY=/chroma/chroma/db
     ports:
       - "8000:8000"
     volumes:

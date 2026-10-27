@@ -234,8 +234,27 @@ async def seed_all_data() -> dict:
         embeddings=embeddings,
     )
 
+    # ── 投入後の検証 ────────────────────────────────
+    actual_count = collection.count()
+    verify_results = collection.get(limit=actual_count)
+    verify_ids = verify_results.get("ids", [])
+    verify_metas = verify_results.get("metadatas", [])
+
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info(f"[SEED] 投入完了: 期待={len(docs)}件, 実際={actual_count}件")
+    logger.info(f"[SEED] 検証ID一覧: {verify_ids}")
+    for meta in verify_metas:
+        logger.info(f"[SEED] メタデータ: tenant_id={meta.get('tenant_id')}, year={meta.get('effective_year')}({type(meta.get('effective_year')).__name__}), title={meta.get('title', '')[:30]}")
+
+    # テナントフィルタでの検索テスト
+    test_filter = {"tenant_id": "A社_都市型"}
+    test_results = collection.get(where=test_filter)
+    logger.info(f"[SEED] フィルタテスト tenant=A社_都市型 → {len(test_results.get('ids', []))}件")
+
     return {
         "status": "ok",
         "collection": COLLECTION_NAME,
         "documents_inserted": len(docs),
+        "actual_count": actual_count,
     }

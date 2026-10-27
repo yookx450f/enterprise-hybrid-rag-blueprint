@@ -4,6 +4,8 @@ Phase 3: Naive RAG との違いを劇的にDemonstratingする核心モジュー
 """
 
 import asyncio
+import json
+import logging
 import time
 import httpx
 from typing import AsyncGenerator
@@ -11,6 +13,8 @@ from janome.tokenizer import Tokenizer as JanomeTokenizer
 from rank_bm25 import BM25Okapi
 from config import settings
 from rag_engine import PipelineStep, get_chroma_client, embed_texts_ollama
+
+logger = logging.getLogger(__name__)
 
 
 # ─── 日本語トークナイズ ─────────────────────────────────────
@@ -93,6 +97,7 @@ async def run_hybrid_rag(
     tenant_id: str = "A社_都市型",
     min_year: int = 2025,
     llm_model: str | None = None,
+    ollama_url: str | None = None,
 ) -> dict:
     """
     ハイブリッド検索（Metadata + BM25 + Vector RRF）を実行する。
@@ -115,8 +120,9 @@ async def run_hybrid_rag(
         embedding_function=None,
     )
     total_count = collection.count()
+    logger.info(f"[Hybrid RAG] コレクション総数: {total_count}")
 
-    query_embeddings = await embed_texts_ollama([query])
+    query_embeddings = await embed_texts_ollama([query], ollama_url=ollama_url)
     embed_ms = int((time.time() - t0) * 1000)
     steps.append(PipelineStep("embed", "クエリベクトル化", "done", embed_ms, f"モデル: {settings.EMBED_MODEL}"))
 
@@ -140,6 +146,11 @@ async def run_hybrid_rag(
     vec_docs = vec_results.get("documents", [[]])[0]
     vec_metas = vec_results.get("metadatas", [[]])[0]
     vec_distances = vec_results.get("distances", [[]])[0]
+
+    logger.info(f"[Hybrid RAG] メタフィルタ後ヒット数: {len(vec_ids)}")
+    logger.info(f"[Hybrid RAG] フィルタ条件: tenant_id={tenant_id}, effective_year>={min_year}")
+    if vec_metas:
+        logger.info(f"[Hybrid RAG] 1件目のメタデータ: {vec_metas[0]}")
 
     steps.append(PipelineStep(
         "meta_filter", "メタデータフィルタ", "done", filter_ms,
@@ -232,16 +243,17 @@ async def run_hybrid_rag(
     )
 
     start_time = time.time()
+    base_url = ollama_url or settings.OLLAMA_BASE_URL
     async with httpx.AsyncClient() as client:
         resp = await client.post(
-            f"{settings.OLLAMA_BASE_URL}/api/generate",
+            f"{base_url}/api/generate",
             json={
-                "model": llm_model,
-                "prompt": prompt,
-                "stream": False,
-            },
-            timeout=120.0,
-        )
+                    "model": llm_model,
+                    "prompt": prompt,
+                    "stream": False,
+                },
+            timeout=settings.LLM_TIMEOUT,
+            )
         resp.raise_for_status()
         data = resp.json()
 
@@ -264,6 +276,7 @@ async def stream_hybrid_rag(
     tenant_id: str = "A社_都市型",
     min_year: int = 2025,
     llm_model: str | None = None,
+    ollama_url: str | None = None,
 ) -> AsyncGenerator[dict, None]:
     """
     ストリーミング版 Hybrid RAG。
@@ -281,8 +294,9 @@ async def stream_hybrid_rag(
         embedding_function=None,
     )
     total_count = collection.count()
+    logger.info(f"[Hybrid RAG Stream] コレクション総数: {total_count}, クエリ: {query[:30]}...")
 
-    query_embeddings = await embed_texts_ollama([query])
+    query_embeddings = await embed_texts_ollama([query], ollama_url=ollama_url)
     embed_ms = int((time.time() - t0) * 1000)
     yield {
         "type": "step_done",
@@ -312,6 +326,13 @@ async def stream_hybrid_rag(
     vec_docs = vec_results.get("documents", [[]])[0]
     vec_metas = vec_results.get("metadatas", [[]])[0]
     vec_distances = vec_results.get("distances", [[]])[0]
+
+    logger.info(f"[Hybrid RAG Stream] メタフィルタ後ヒット数: {len(vec_ids)}")
+    logger.info(f"[Hybrid RAG Stream] フィルタ条件: tenant_id={tenant_id}, effective_year>={min_year}")
+    if vec_metas:
+        for m in vec_metas[:3]:
+            ey = m.get('effective_year')
+            logger.info(f"[Hybrid RAG Stream] メタ: tenant={m.get('tenant_id')}, year={ey}({type(ey).__name__}), title={m.get('title','')[:20]}")
 
     yield {
         "type": "step_done",
@@ -439,35 +460,42 @@ async def stream_hybrid_rag(
 
     yield {"type": "step_start", "step_id": "llm", "name": "LLM推論"}
     start_time = time.time()
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{settings.OLLAMA_BASE_URL}/api/generate",
+    full_answer = ""
+    base_url = ollama_url or settings.OLLAMA_BASE_URL
+    async with httpx.AsyncClient(timeout=settings.LLM_TIMEOUT) as client:
+        async with client.stream("POST",
+            f"{base_url}/api/generate",
             json={
-                "model": llm_model,
-                "prompt": prompt,
-                "stream": False,
-            },
-            timeout=120.0,
-        )
-        resp.raise_for_status()
-        data = resp.json()
+                     "model": llm_model,
+                     "prompt": prompt,
+                     "stream": True,
+                 },
+         ) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line:
+                    continue
+                try:
+                    chunk = json.loads(line)
+                    token = chunk.get("response", "")
+                    if token:
+                        full_answer += token
+                        yield {
+                              "type": "answer_chunk",
+                              "text": token,
+                              "inference_time_ms": int((time.time() - start_time) * 1000),
+                          }
+                    if chunk.get("done", False):
+                        break
+                except json.JSONDecodeError:
+                    pass
 
     inference_time_ms = int((time.time() - start_time) * 1000)
     yield {
-        "type": "step_done",
-        "step_id": "llm",
-        "duration_ms": inference_time_ms,
-        "detail": f"モデル: {llm_model}",
-    }
-
-    answer = data.get("response", "")
-    # 回答を複数チャンクに分割してストリーミング表示
-    chunk_size = 50
-    for i in range(0, len(answer), chunk_size):
-        yield {
-            "type": "answer_chunk",
-            "text": answer[i:i + chunk_size],
-            "inference_time_ms": inference_time_ms,
-        }
+          "type": "step_done",
+          "step_id": "llm",
+          "duration_ms": inference_time_ms,
+          "detail": f"モデル: {llm_model}",
+      }
 
     yield {"type": "done"}

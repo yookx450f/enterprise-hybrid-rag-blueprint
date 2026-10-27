@@ -2,11 +2,15 @@
 Naive RAG エンジン（単純ベクトル検索）
 """
 
+import json
+import logging
 import time
 import httpx
 import chromadb
 from typing import AsyncGenerator
-from config import settings
+from config import settings, resolve_ollama_url
+
+logger = logging.getLogger(__name__)
 
 
 class PipelineStep:
@@ -77,23 +81,24 @@ def get_chroma_client():
     )
 
 
-async def embed_texts_ollama(texts: list[str]) -> list[list[float]]:
+async def embed_texts_ollama(texts: list[str], ollama_url: str | None = None) -> list[list[float]]:
     """Ollamaの/api/embedエンドポイントを使ってテキストをベクトル化する"""
+    base_url = ollama_url or settings.OLLAMA_BASE_URL
     async with httpx.AsyncClient() as client:
         resp = await client.post(
-            f"{settings.OLLAMA_BASE_URL}/api/embed",
+            f"{base_url}/api/embed",
             json={
                 "model": settings.EMBED_MODEL,
                 "input": texts,
             },
-            timeout=60.0,
+            timeout=settings.EMBED_TIMEOUT,
         )
         resp.raise_for_status()
         data = resp.json()
         return data.get("embeddings", [])
 
 
-async def run_naive_rag(query: str, llm_model: str | None = None) -> dict:
+async def run_naive_rag(query: str, llm_model: str | None = None, ollama_url: str | None = None) -> dict:
     """
     単純ベクトル検索（Naive RAG）を実行する。
 
@@ -107,7 +112,7 @@ async def run_naive_rag(query: str, llm_model: str | None = None) -> dict:
 
     # ── Step 1: クエリベクトル化 ───────────────────────
     t0 = time.time()
-    query_embeddings = await embed_texts_ollama([query])
+    query_embeddings = await embed_texts_ollama([query], ollama_url=ollama_url)
     embed_ms = int((time.time() - t0) * 1000)
     steps.append(PipelineStep("embed", "クエリベクトル化", "done", embed_ms, f"モデル: {settings.EMBED_MODEL}"))
 
@@ -118,6 +123,7 @@ async def run_naive_rag(query: str, llm_model: str | None = None) -> dict:
         embedding_function=None,
     )
     total_count = collection.count()
+    logger.info(f"[Naive RAG] コレクション総数: {total_count}")
 
     # ── Step 2: ベクトル検索 ───────────────────────────
     t0 = time.time()
@@ -139,6 +145,12 @@ async def run_naive_rag(query: str, llm_model: str | None = None) -> dict:
     docs_list = results.get("documents", [[]])[0]
     metas_list = results.get("metadatas", [[]])[0]
     distances_list = results.get("distances", [[]])[0]
+
+    logger.info(f"[Naive RAG] ベクトル検索ヒット数: {len(ids_list)}, IDs: {ids_list}")
+    if metas_list:
+        for m in metas_list[:3]:
+            ey = m.get('effective_year')
+            logger.info(f"[Naive RAG] メタ: tenant={m.get('tenant_id')}, year={ey}({type(ey).__name__}), title={m.get('title','')[:20]}")
 
     for i in range(len(ids_list)):
         chunks.append(
@@ -163,8 +175,9 @@ async def run_naive_rag(query: str, llm_model: str | None = None) -> dict:
     # ── Step 3: LLM推論 ────────────────────────────────
     start_time = time.time()
     async with httpx.AsyncClient() as client:
+        base_url = ollama_url or settings.OLLAMA_BASE_URL
         resp = await client.post(
-            f"{settings.OLLAMA_BASE_URL}/api/generate",
+            f"{base_url}/api/generate",
             json={
                 "model": llm_model,
                 "prompt": (
@@ -178,7 +191,7 @@ async def run_naive_rag(query: str, llm_model: str | None = None) -> dict:
                 ),
                 "stream": False,
             },
-            timeout=120.0,
+            timeout=settings.LLM_TIMEOUT,
         )
         resp.raise_for_status()
         data = resp.json()
@@ -197,6 +210,7 @@ async def run_naive_rag(query: str, llm_model: str | None = None) -> dict:
 async def stream_naive_rag(
     query: str,
     llm_model: str | None = None,
+    ollama_url: str | None = None,
 ) -> AsyncGenerator[dict, None]:
     """
     ストリーミング版 Naive RAG。
@@ -208,7 +222,7 @@ async def stream_naive_rag(
     # ── Step 1: クエリベクトル化 ───────────────────────
     yield {"type": "step_start", "step_id": "embed", "name": "クエリベクトル化"}
     t0 = time.time()
-    query_embeddings = await embed_texts_ollama([query])
+    query_embeddings = await embed_texts_ollama([query], ollama_url=ollama_url)
     embed_ms = int((time.time() - t0) * 1000)
     yield {
         "type": "step_done",
@@ -224,6 +238,7 @@ async def stream_naive_rag(
         embedding_function=None,
     )
     total_count = collection.count()
+    logger.info(f"[Naive RAG Stream] コレクション総数: {total_count}")
 
     # ── Step 2: ベクトル検索 ───────────────────────────
     yield {"type": "step_start", "step_id": "vector_search", "name": "ベクトル検索"}
@@ -238,6 +253,12 @@ async def stream_naive_rag(
     docs_list = results.get("documents", [[]])[0]
     metas_list = results.get("metadatas", [[]])[0]
     distances_list = results.get("distances", [[]])[0]
+
+    logger.info(f"[Naive RAG Stream] ベクトル検索ヒット数: {len(ids_list)}, IDs: {ids_list}")
+    if metas_list:
+        for m in metas_list[:3]:
+            ey = m.get('effective_year')
+            logger.info(f"[Naive RAG Stream] メタ: tenant={m.get('tenant_id')}, year={ey}({type(ey).__name__}), title={m.get('title','')[:20]}")
 
     yield {
         "type": "step_done",
@@ -270,9 +291,11 @@ async def stream_naive_rag(
 
     yield {"type": "step_start", "step_id": "llm", "name": "LLM推論"}
     start_time = time.time()
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{settings.OLLAMA_BASE_URL}/api/generate",
+    full_answer = ""
+    base_url = ollama_url or settings.OLLAMA_BASE_URL
+    async with httpx.AsyncClient(timeout=settings.LLM_TIMEOUT) as client:
+        async with client.stream("POST",
+            f"{base_url}/api/generate",
             json={
                 "model": llm_model,
                 "prompt": (
@@ -284,12 +307,27 @@ async def stream_naive_rag(
                     f"{query}\n\n"
                     "参考情報に含まれていない場合は、「該当する情報が参考資料に見つかりませんでした」と回答してください。"
                 ),
-                "stream": False,
+                "stream": True,
             },
-            timeout=120.0,
-        )
-        resp.raise_for_status()
-        data = resp.json()
+        ) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line:
+                    continue
+                try:
+                    chunk = json.loads(line)
+                    token = chunk.get("response", "")
+                    if token:
+                        full_answer += token
+                        yield {
+                            "type": "answer_chunk",
+                            "text": token,
+                            "inference_time_ms": int((time.time() - start_time) * 1000),
+                        }
+                    if chunk.get("done", False):
+                        break
+                except json.JSONDecodeError:
+                    pass
 
     inference_time_ms = int((time.time() - start_time) * 1000)
     yield {
@@ -298,15 +336,5 @@ async def stream_naive_rag(
         "duration_ms": inference_time_ms,
         "detail": f"モデル: {llm_model}",
     }
-
-    answer = data.get("response", "")
-    # 回答を複数チャンクに分割してストリーミング表示
-    chunk_size = 50
-    for i in range(0, len(answer), chunk_size):
-        yield {
-            "type": "answer_chunk",
-            "text": answer[i:i + chunk_size],
-            "inference_time_ms": inference_time_ms,
-        }
 
     yield {"type": "done"}

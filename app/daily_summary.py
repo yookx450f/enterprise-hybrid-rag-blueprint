@@ -59,7 +59,7 @@ ESCALATION_EMAILS = [
 ]
 
 
-async def run_daily_summary(llm_model: str | None = None) -> dict:
+async def run_daily_summary(llm_model: str | None = None, ollama_url: str | None = None) -> dict:
     """
     店舗からのエスカレーションメール5件を一括解析する。
 
@@ -102,9 +102,10 @@ async def run_daily_summary(llm_model: str | None = None) -> dict:
     )
 
     start_time = time.time()
+    base_url = ollama_url or settings.OLLAMA_BASE_URL
     async with httpx.AsyncClient() as client:
         resp = await client.post(
-            f"{settings.OLLAMA_BASE_URL}/api/generate",
+            f"{base_url}/api/generate",
             json={
                 "model": llm_model,
                 "prompt": prompt,

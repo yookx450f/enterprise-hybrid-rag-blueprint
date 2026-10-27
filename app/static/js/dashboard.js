@@ -10,6 +10,11 @@ function getSelectedModel() {
     return sel.value || null;
 }
 
+function getSelectedHost() {
+    const sel = document.getElementById('host-select');
+    return sel.value || null;
+}
+
 function showToast(msg, type = 'success') {
     const toast = document.getElementById('toast');
     toast.textContent = msg;
@@ -39,49 +44,97 @@ function renderMarkdown(content) {
 // ===== 初期化処理 =====
 
 document.addEventListener('DOMContentLoaded', () => {
+    initHostSelector();
     initHealthCheck();
+    initSeedButton();
     initTabs();
     initCompareTab();
     initSummaryTab();
     initBrowserTab();
 });
 
-// ===== ヘルスチェック =====
+// ===== LLMホストセレクトボックス =====
 
-async function initHealthCheck() {
+async function loadModelsForHost(host) {
     try {
-        const data = await apiCall('/api/health');
-        const dot = document.getElementById('health-dot');
-        const text = document.getElementById('health-text');
+        const url = host ? `/api/health?host=${encodeURIComponent(host)}` : '/api/health';
+        const data = await apiCall(url);
         const modelSel = document.getElementById('model-select');
-
-        if (data.ollama_status === 'connected' && data.chromadb === 'connected') {
-            dot.className = 'inline-block w-2.5 h-2.5 rounded-full bg-emerald-400';
-            text.textContent = 'Ollama + ChromaDB 接続OK';
-            text.className = 'text-emerald-400 text-sm';
-        } else {
-            dot.className = 'inline-block w-2.5 h-2.5 rounded-full bg-yellow-400 animate-pulse';
-            text.textContent = `警告: ChromaDB=${data.chromadb} / Ollama=${data.ollama_status}`;
-            text.className = 'text-yellow-400 text-sm';
-        }
-
+        
         if (data.available_models && data.available_models.length) {
-            modelSel.classList.remove('hidden');
+            modelSel.innerHTML = '<option value="">モデルを選択...</option>';
             data.available_models.forEach(m => {
                 const opt = document.createElement('option');
                 opt.value = m;
                 opt.textContent = m;
                 modelSel.appendChild(opt);
-            });
-            // デフォルトで completion 対応モデルを選ぶ
+              });
+              // デフォルトで completion 対応モデルを選ぶ
             const pref = data.available_models.find(m => !m.includes('bge') && !m.includes('embed'));
             if (pref) modelSel.value = pref;
+        } else {
+            modelSel.innerHTML = '<option value="">モデルがありません</option>';
         }
     } catch (e) {
-        console.error('ヘルスチェック失敗', e);
+        console.warn('モデル一覧取得失敗', e);
+        const modelSel = document.getElementById('model-select');
+        modelSel.innerHTML = '<option value="">エラー</option>';
     }
+}
 
-    // シードボタン
+async function initHostSelector() {
+    try {
+        const data = await apiCall('/api/ollama/hosts');
+        const hostSel = document.getElementById('host-select');
+        hostSel.innerHTML = '<option value="">デフォルト</option>';
+        for (const [alias, url] of Object.entries(data.hosts || {})) {
+            const opt = document.createElement('option');
+            opt.value = alias;
+            const hostPort = url.replace('http://', '').split(':')[0];
+            opt.textContent = `${alias} (${hostPort})`;
+            hostSel.appendChild(opt);
+          }
+
+        hostSel.addEventListener('change', () => {
+            const selectedHost = hostSel.value || null;
+            initHealthCheck(selectedHost);
+            loadModelsForHost(selectedHost);
+          });
+          
+        // 初期読み込み時にデフォルトホストのモデルを取得
+        await loadModelsForHost(null);
+      } catch (e) {
+        console.warn('ホスト一覧取得失敗', e);
+      }
+}
+
+// ===== ヘルスチェック =====
+
+async function initHealthCheck(host) {
+    try {
+        const url = host ? `/api/health?host=${encodeURIComponent(host)}` : '/api/health';
+        const data = await apiCall(url);
+        const dot = document.getElementById('health-dot');
+        const text = document.getElementById('health-text');
+
+        if (data.ollama_status === 'connected' && data.chromadb === 'connected') {
+            dot.className = 'inline-block w-2.5 h-2.5 rounded-full bg-emerald-400';
+            const hostName = host || 'default';
+            text.textContent = `Ollama (${hostName}) + ChromaDB 接続OK`;
+            text.className = 'text-emerald-400 text-sm';
+          } else {
+            dot.className = 'inline-block w-2.5 h-2.5 rounded-full bg-yellow-400 animate-pulse';
+            text.textContent = `警告: ChromaDB=${data.chromadb} / Ollama=${data.ollama_status}`;
+            text.className = 'text-yellow-400 text-sm';
+          }
+      } catch (e) {
+        console.error('ヘルスチェック失敗', e);
+      }
+}
+
+// ===== シードボタン =====
+
+function initSeedButton() {
     document.getElementById('seed-btn').addEventListener('click', async () => {
         const btn = document.getElementById('seed-btn');
         btn.disabled = true;
@@ -90,16 +143,16 @@ async function initHealthCheck() {
             const res = await apiCall('/api/seed', 'POST');
             if (res.status === 'ok') {
                 showToast(`データ初期化完了 (${res.documents_inserted}件投入)`);
-            } else {
+              } else {
                 showToast('初期化に失敗しました', 'error');
-            }
-        } catch (e) {
+              }
+          } catch (e) {
             showToast('通信エラー: ' + e.message, 'error');
-        } finally {
+          } finally {
             btn.disabled = false;
             btn.textContent = '🔄 業務サンプルデータ初期化';
-        }
-    });
+          }
+      });
 }
 
 // ===== タブ切り替え =====
@@ -169,8 +222,9 @@ async function runCompareStream() {
                 tenant_id: document.getElementById('tenant-select').value,
                 min_year: parseInt(document.getElementById('year-select').value),
                 llm_model: getSelectedModel(),
-            }),
-        });
+                ollama_host: getSelectedHost(),
+              }),
+          });
 
         const reader = response.body.getReader();
         const decoder = new TextDecoder('utf-8');
@@ -225,7 +279,15 @@ function handleSSEEvent(event, naiveBody, hybridBody) {
     const state = streamState[engine];
     if (!state) return;
 
-    console.log(`[SSE ${engine}] type=${event.type}`, JSON.stringify(event).slice(0, 200));
+    console.log(`[SSE ${engine}] type=${event.type}`, JSON.stringify(event).slice(0, 300));
+
+    // デバッグ: 検索ヒット件数を確認
+    if (event.type === 'step_done' && (event.step_id === 'meta_filter' || event.step_id === 'vector_search')) {
+        console.log(`[SSE ${engine}] 🔍 検索結果: count_before=${event.count_before}, count_after=${event.count_after}`);
+    }
+    if (event.type === 'chunk_preview') {
+        console.log(`[SSE ${engine}] 📄 チャンク数: ${event.chunks?.length || 0}`, event.chunks);
+    }
 
     const container = engine === 'naive' ? naiveBody : hybridBody;
     const metaId = engine === 'naive' ? 'naive-meta' : 'hybrid-meta';
@@ -768,7 +830,7 @@ async function runSummary() {
     btn.textContent = '要約処理中...';
 
     try {
-        const data = await apiCall('/api/daily_summary', 'POST', { llm_model: getSelectedModel() });
+        const data = await apiCall('/api/daily_summary', 'POST', { llm_model: getSelectedModel(), ollama_host: getSelectedHost() });
 
         if (data.status === 'error') throw new Error(data.message);
 

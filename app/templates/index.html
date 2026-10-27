@@ -26,9 +26,18 @@
             <div id="status-bar" class="flex items-center gap-3 text-sm">
                 <span id="health-dot" class="inline-block w-2.5 h-2.5 rounded-full bg-yellow-500 animate-pulse"></span>
                 <span id="health-text" class="text-slate-400">接続確認中...</span>
-                <select id="model-select" class="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs hidden">
-                    <option value="">モデルを選択...</option>
-                </select>
+                <label class="flex items-center gap-1 text-xs text-slate-400">
+                    ホスト
+                    <select id="host-select" class="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs">
+                        <option value="">デフォルト</option>
+                    </select>
+                </label>
+                <label class="flex items-center gap-1 text-xs text-slate-400">
+                    モデル
+                    <select id="model-select" class="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs">
+                        <option value="">モデルを選択...</option>
+                    </select>
+                </label>
                 <button id="seed-btn" class="ml-2 bg-blue-600 hover:bg-blue-500 text-white text-xs px-3 py-1.5 rounded transition">
                     🔄 業務サンプルデータ初期化
                 </button>
