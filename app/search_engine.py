@@ -28,14 +28,35 @@ _VERB_ADJ_PARTS = {"動詞", "形容詞"}
 def tokenize_ja(text: str) -> list[str]:
     """
     Janomeで日本語テキストを形態素解析し、
-    名詞・動詞・形容詞（自立語）の表層形をリストで返す。
+    名詞・動詞・形容詞（自立語）をリストで返す。
+    動詞・形容詞は原形(base_form)を抽出し、重複トークンはフィルタする。
+    
+    注意: Janomeのバージョンによっては pos が None になる場合があるため、
+    その場合は surface をそのままトークンとして扱う。
     """
     tokens = []
+    seen = set()
     for token in _janome.tokenize(text):
-        # posはカンマ区切りの文字列（例: "名詞,固有名詞,組織"）
-        base_pos = token.pos.split(",")[0] if token.pos else ""
-        if base_pos in {"名詞", "代名詞", "助数詞"} or base_pos in {"動詞", "形容詞"}:
-            tokens.append(token.surface)
+        # posがNoneの場合はsurfaceをそのまま使用（辞書外語や固有名詞など）
+        if token.pos is None:
+            surface = token.surface
+            if len(surface) >= 2 and surface not in seen:
+                tokens.append(surface)
+                seen.add(surface)
+            continue
+        
+        base_pos = token.pos.split(",")[0]
+        if base_pos in {"名詞", "代名詞", "助数詞"}:
+            surface = token.surface
+            if len(surface) >= 1 and surface not in seen:
+                tokens.append(surface)
+                seen.add(surface)
+        elif base_pos in {"動詞", "形容詞"}:
+            # Janomeでは base_form が原形（動詞・形容詞の基本形）
+            base = token.base_form
+            if len(base) >= 2 and base not in seen:
+                tokens.append(base)
+                seen.add(base)
     return tokens
 
 
@@ -179,7 +200,8 @@ async def run_hybrid_rag(
 
     steps.append(PipelineStep(
         "bm25", "BM25キーワードスコアリング", "done", bm25_ms,
-        detail=f"クエリトークン数: {len(query_tokens)} / Janome形態素解析",
+        detail=f"Janome形態素解析で {len(query_tokens)} 語抽出",
+        query_keywords=query_tokens,
     ))
 
     # BM25スコアでソートしたIDリスト（降順＝スコア高的順）
@@ -234,15 +256,20 @@ async def run_hybrid_rag(
         "=== 質問 ===\n"
         f"{query}\n\n"
         "=== 回答フォーマット ===\n"
-        "以下の4項目を明確に回答してください：\n"
-        "① 審査可否の結論\n"
-        "② 特例適用の必須条件\n"
-        "③ 過去トラブル事例を踏まえた審査時の注意点\n"
-        "④ 根拠とした規定タイトル\n\n"
+        "以下の4項目を明確に回答してください。\n"
+        "必ずMarkdown形式で回答し、## で見出し、### で各項目の小見出し、箇条書き（-）で詳細を記述してください。\n\n"
+        "## {質問の要約}\n\n"
+        "### ① 審査可否の結論\n"
+        "- ...\n\n"
+        "### ② 特例適用の必須条件\n"
+        "- ...\n\n"
+        "### ③ 過去トラブル事例を踏まえた審査時の注意点\n"
+        "- ...\n\n"
+        "### ④ 根拠とした規定タイトル\n"
+        "- ...\n\n"
         "参考情報に含まれていない場合は、「該当する情報が参考資料に見つかりませんでした」と回答してください。"
     )
 
-    start_time = time.time()
     base_url = ollama_url or settings.OLLAMA_BASE_URL
     async with httpx.AsyncClient() as client:
         resp = await client.post(
@@ -257,7 +284,9 @@ async def run_hybrid_rag(
         resp.raise_for_status()
         data = resp.json()
 
-    inference_time_ms = int((time.time() - start_time) * 1000)
+    # Ollamaサーバー側の実際の推論時間を使用（キュー待ち時間除外）
+    eval_duration_ns = data.get("eval_duration", 0)
+    inference_time_ms = int(eval_duration_ns / 1_000_000) if eval_duration_ns else 0
     prompt_length = len(prompt)
 
     steps.append(PipelineStep("llm", "LLM推論", "done", inference_time_ms, f"モデル: {llm_model}"))
@@ -378,7 +407,8 @@ async def stream_hybrid_rag(
         "type": "step_done",
         "step_id": "bm25",
         "duration_ms": bm25_ms,
-        "detail": f"クエリトークン数: {len(query_tokens)} / Janome形態素解析",
+        "detail": f"Janome形態素解析で {len(query_tokens)} 語抽出",
+        "query_keywords": query_tokens,
     }
 
     # BM25スコアでソートしたIDリスト（降順＝スコア高的順）
@@ -450,17 +480,23 @@ async def stream_hybrid_rag(
         "=== 質問 ===\n"
         f"{query}\n\n"
         "=== 回答フォーマット ===\n"
-        "以下の4項目を明確に回答してください：\n"
-        "① 審査可否の結論\n"
-        "② 特例適用の必須条件\n"
-        "③ 過去トラブル事例を踏まえた審査時の注意点\n"
-        "④ 根拠とした規定タイトル\n\n"
+        "以下の4項目を明確に回答してください。\n"
+        "必ずMarkdown形式で回答し、## で見出し、### で各項目の小見出し、箇条書き（-）で詳細を記述してください。\n\n"
+        "## {質問の要約}\n\n"
+        "### ① 審査可否の結論\n"
+        "- ...\n\n"
+        "### ② 特例適用の必須条件\n"
+        "- ...\n\n"
+        "### ③ 過去トラブル事例を踏まえた審査時の注意点\n"
+        "- ...\n\n"
+        "### ④ 根拠とした規定タイトル\n"
+        "- ...\n\n"
         "参考情報に含まれていない場合は、「該当する情報が参考資料に見つかりませんでした」と回答してください。"
     )
 
     yield {"type": "step_start", "step_id": "llm", "name": "LLM推論"}
-    start_time = time.time()
     full_answer = ""
+    final_eval_duration_ns = 0
     base_url = ollama_url or settings.OLLAMA_BASE_URL
     async with httpx.AsyncClient(timeout=settings.LLM_TIMEOUT) as client:
         async with client.stream("POST",
@@ -470,7 +506,7 @@ async def stream_hybrid_rag(
                      "prompt": prompt,
                      "stream": True,
                  },
-         ) as resp:
+          ) as resp:
             resp.raise_for_status()
             async for line in resp.aiter_lines():
                 if not line:
@@ -483,14 +519,16 @@ async def stream_hybrid_rag(
                         yield {
                               "type": "answer_chunk",
                               "text": token,
-                              "inference_time_ms": int((time.time() - start_time) * 1000),
+                              "inference_time_ms": int(chunk.get("eval_duration", 0) / 1_000_000),
                           }
                     if chunk.get("done", False):
+                        final_eval_duration_ns = chunk.get("eval_duration", 0)
                         break
                 except json.JSONDecodeError:
                     pass
 
-    inference_time_ms = int((time.time() - start_time) * 1000)
+    # Ollamaサーバー側の実際の推論時間を使用（キュー待ち時間除外）
+    inference_time_ms = int(final_eval_duration_ns / 1_000_000) if final_eval_duration_ns else 0
     yield {
           "type": "step_done",
           "step_id": "llm",

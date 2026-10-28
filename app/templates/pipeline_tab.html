@@ -1,0 +1,166 @@
+<!-- ===== Tab 5: 検索パイプライン詳細 ===== -->
+<section id="tab-pipeline" class="tab-content hidden space-y-6">
+
+    <!-- パイプライン全体フロー図 -->
+    <div class="bg-slate-900 border border-slate-800 rounded-xl p-6">
+        <h2 class="text-base font-bold text-violet-400 mb-4">① 検索パイプライン全体フロー</h2>
+        <p class="text-sm text-slate-400 mb-4">キャプチャで表示される比較画面の各ステップを、Naive RAG と Hybrid RAG で並べて可視化します。</p>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <!-- Naive RAG フロー -->
+            <div class="bg-slate-950 border border-red-900/30 rounded-lg p-4">
+                <h3 class="text-sm font-bold text-red-400 mb-3">⚠️ Naive RAG（単純ベクトル検索）</h3>
+                <div class="space-y-2 text-xs">
+                    <div class="flex items-center gap-2"><span class="text-base">🔤</span><span class="text-slate-300">クエリベクトル化</span><span class="ml-auto text-slate-500">~3.5s</span></div>
+                    <div class="flex items-center gap-2"><span class="text-red-500">↓</span></div>
+                    <div class="flex items-center gap-2"><span class="text-base">📐</span><span class="text-slate-300">ベクトル検索 Top-4</span><span class="ml-auto text-slate-500">15 → 4件 / ~0.01s</span></div>
+                    <div class="flex items-center gap-2"><span class="text-red-500">↓</span></div>
+                    <div class="flex items-center gap-2"><span class="text-base">🧠</span><span class="text-slate-300">LLM推論</span><span class="ml-auto text-slate-500">~6.4s</span></div>
+                    <div class="border-t border-slate-800 mt-2 pt-2 text-right text-slate-500">合計: ~9.98s</div>
+                </div>
+            </div>
+            <!-- Hybrid RAG フロー -->
+            <div class="bg-slate-950 border border-emerald-900/30 rounded-lg p-4">
+                <h3 class="text-sm font-bold text-emerald-400 mb-3">✅ Architected Hybrid RAG</h3>
+                <div class="space-y-2 text-xs">
+                    <div class="flex items-center gap-2"><span class="text-base">🔤</span><span class="text-slate-300">クエリベクトル化</span><span class="ml-auto text-slate-500">~3.5s</span></div>
+                    <div class="flex items-center gap-2"><span class="text-emerald-500">↓</span></div>
+                    <div class="flex items-center gap-2"><span class="text-base">🏷️</span><span class="text-slate-300">メタデータフィルタ</span><span class="ml-auto text-slate-500">15 → 8件 / ~0.01s</span></div>
+                    <div class="flex items-center gap-2"><span class="text-emerald-500">↓</span></div>
+                    <div class="flex items-center gap-2"><span class="text-base">🔑</span><span class="text-slate-300">BM25スコアリング</span><span class="ml-auto text-slate-500">12語抽出 / ~0.05s</span></div>
+                    <div class="flex items-center gap-2"><span class="text-emerald-500">↓</span></div>
+                    <div class="flex items-center gap-2"><span class="text-base">⚖️</span><span class="text-slate-300">RRFリランキング Top-3</span><span class="ml-auto text-slate-500">8 → 3件 / ~0.01s</span></div>
+                    <div class="flex items-center gap-2"><span class="text-emerald-500">↓</span></div>
+                    <div class="flex items-center gap-2"><span class="text-base">🧠</span><span class="text-slate-300">LLM推論</span><span class="ml-auto text-slate-500">~6.4s</span></div>
+                    <div class="border-t border-slate-800 mt-2 pt-2 text-right text-slate-500">合計: ~10.07s</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ステップ別詳細解説 -->
+    <div class="bg-slate-900 border border-slate-800 rounded-xl p-6">
+        <h2 class="text-base font-bold text-cyan-400 mb-4">② 各ステップの詳細</h2>
+
+        <!-- Step 0: ベクトル化 -->
+        <div class="mb-5">
+            <h3 class="text-sm font-semibold text-slate-300 mb-2 flex items-center gap-2"><span class="text-base">🔤</span> Step 0: クエリベクトル化（両方共通）</h3>
+            <div class="overflow-x-auto">
+                <table class="w-full text-xs">
+                    <thead><tr class="border-b border-slate-700"><th class="text-left py-1.5 px-2 text-slate-500">項目</th><th class="text-left py-1.5 px-2 text-slate-500">値 / 説明</th></tr></thead>
+                    <tbody class="text-slate-300">
+                        <tr class="border-b border-slate-800/50"><td class="py-1.5 px-2 font-medium">モデル</td><td><code class="bg-slate-800 px-1 rounded">bge-m3</code>（1024次元）</td></tr>
+                        <tr class="border-b border-slate-800/50"><td class="py-1.5 px-2 font-medium">処理内容</td><td>Ollama Embedding API でクエリを数値ベクトルに変換</td></tr>
+                        <tr><td class="py-1.5 px-2 font-medium">考え方</td><td>bge-m3 は日本語に強く、多言語対応。1024次元で高精度な類似度計算が可能。</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Step 1: ベクトル検索 vs メタフィルタ -->
+        <div class="mb-5">
+            <h3 class="text-sm font-semibold text-slate-300 mb-2 flex items-center gap-2"><span class="text-base">📐 / 🏷️</span> Step 1: ベクトル検索（Naive） vs メタデータフィルタ（Hybrid）</h3>
+            <div class="overflow-x-auto">
+                <table class="w-full text-xs">
+                    <thead><tr class="border-b border-slate-700"><th class="text-left py-1.5 px-2 text-slate-500">比較軸</th><th class="text-center py-1.5 px-2 text-red-400">Naive RAG</th><th class="text-center py-1.5 px-2 text-emerald-400">Hybrid RAG</th></tr></thead>
+                    <tbody class="text-slate-300">
+                        <tr class="border-b border-slate-800/50"><td class="py-1.5 px-2 font-medium">絞り込み方法</td><td class="text-center py-1.5 px-2">類似度ベース Top-4</td><td class="text-center py-1.5 px-2">tenant_id + effective_year でメタフィルタ</td></tr>
+                        <tr class="border-b border-slate-800/50"><td class="py-1.5 px-2 font-medium">候補数</td><td class="text-center py-1.5 px-2">15 → 4件</td><td class="text-center py-1.5 px-2">15 → 8件（フィルタ後）</td></tr>
+                        <tr><td class="py-1.5 px-2 font-medium">問題点</td><td class="text-center py-1.5 px-2 text-red-400">別テナント・廃止規定が混入</td><td class="text-center py-1.5 px-2 text-emerald-400">対象テナントの有効規定のみ抽出</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            <p class="text-xs text-slate-500 mt-2">💡 マルチテナント環境では、メタデータで事前に候補を絞り込むことが必須。Naive RAG は「類似度だけ」なので、意味的に近いけど無関係なドキュメント（別テナントの罠データ）が上位に来る。</p>
+        </div>
+
+        <!-- Step 2: BM25 -->
+        <div class="mb-5">
+            <h3 class="text-sm font-semibold text-slate-300 mb-2 flex items-center gap-2"><span class="text-base">🔑</span> Step 2: BM25 キーワードスコアリング（Hybrid RAGのみ）</h3>
+            <div class="overflow-x-auto">
+                <table class="w-full text-xs">
+                    <thead><tr class="border-b border-slate-700"><th class="text-left py-1.5 px-2 text-slate-500">項目</th><th class="text-left py-1.5 px-2 text-slate-500">値 / 説明</th></tr></thead>
+                    <tbody class="text-slate-300">
+                        <tr class="border-b border-slate-800/50"><td class="py-1.5 px-2 font-medium">形態素解析</td><td><code class="bg-slate-800 px-1 rounded">Janome</code>（名詞・動詞・形容詞を抽出）</td></tr>
+                        <tr class="border-b border-slate-800/50"><td class="py-1.5 px-2 font-medium">スコアリング</td><td><code class="bg-slate-800 px-1 rounded">BM25Okapi</code>（標準パラメータ k1=1.5, b=0.75）</td></tr>
+                        <tr class="border-b border-slate-800/50"><td class="py-1.5 px-2 font-medium">抽出語数</td><td>クエリから約 12 語（キャプチャ例）</td></tr>
+                        <tr><td class="py-1.5 px-2 font-medium">考え方</td><td>ベクトル検索は「意味の近さ」を捉えるが、キーワードの正確な一致を見逃すことがある。BM25 は逆文書頻度（IDF）で希少語に重み付けし、クエリの核心語を強く反映させる。</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Step 3: RRF -->
+        <div class="mb-5">
+            <h3 class="text-sm font-semibold text-slate-300 mb-2 flex items-center gap-2"><span class="text-base">⚖️</span> Step 3: RRF 統合リランキング（Hybrid RAGのみ）</h3>
+            <div class="overflow-x-auto">
+                <table class="w-full text-xs">
+                    <thead><tr class="border-b border-slate-700"><th class="text-left py-1.5 px-2 text-slate-500">項目</th><th class="text-left py-1.5 px-2 text-slate-500">値 / 説明</th></tr></thead>
+                    <tbody class="text-slate-300">
+                        <tr class="border-b border-slate-800/50"><td class="py-1.5 px-2 font-medium">式</td><td><code class="bg-slate-800 px-1 rounded">rrf = 1/(k+rank_vec) + 1/(k+rank_bm25)</code></td></tr>
+                        <tr class="border-b border-slate-800/50"><td class="py-1.5 px-2 font-medium">k 値</td><td>60（論文推奨デフォルト値）</td></tr>
+                        <tr class="border-b border-slate-800/50"><td class="py-1.5 px-2 font-medium">統合結果</td><td>vec(8件) + BM25(8件) → Top-3 選定</td></tr>
+                        <tr><td class="py-1.5 px-2 font-medium">考え方</td><td>Reciprocal Rank Fusion は2つのランキングを融合する単純ながら強力な手法。k=60 は上位順位に大きな重みを置きつつ、下位順位も無視しないバランスを実現。各チャンクには <code class="bg-slate-800 px-1 rounded">vec#N</code> / <code class="bg-slate-800 px-1 rounded">bm25#N</code> のラベルと <code class="bg-slate-800 px-1 rounded">rrf_score</code> が付与され、追跡可能。</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Step 4: LLM推論 -->
+        <div>
+            <h3 class="text-sm font-semibold text-slate-300 mb-2 flex items-center gap-2"><span class="text-base">🧠</span> Step 4: LLM推論（両方共通）</h3>
+            <div class="overflow-x-auto">
+                <table class="w-full text-xs">
+                    <thead><tr class="border-b border-slate-700"><th class="text-left py-1.5 px-2 text-slate-500">項目</th><th class="text-left py-1.5 px-2 text-slate-500">値 / 説明</th></tr></thead>
+                    <tbody class="text-slate-300">
+                        <tr class="border-b border-slate-800/50"><td class="py-1.5 px-2 font-medium">モデル</td><td><code class="bg-slate-800 px-1 rounded">gemma4:e4b</code></td></tr>
+                        <tr class="border-b border-slate-800/50"><td class="py-1.5 px-2 font-medium">プロンプト長</td><td>約 2000文字（参考情報＋質問＋フォーマット指示）</td></tr>
+                        <tr><td class="py-1.5 px-2 font-medium">考え方</td><td>選定されたチャンクをコンテキストとしてLLMに渡し、構造化回答を生成。Naive RAG と Hybrid RAG で同じモデル・同じプロンプトテンプレートを使用し、検索品質の差のみを比較可能にする。</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- 参照チャンクの比較 -->
+    <div class="bg-slate-900 border border-slate-800 rounded-xl p-6">
+        <h2 class="text-base font-bold text-amber-400 mb-4">③ 参照チャンクの比較（キャプチャ例）</h2>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <!-- Naive RAG チャンク -->
+            <div class="bg-slate-950 border border-red-900/30 rounded-lg p-4">
+                <h3 class="text-xs font-bold text-red-400 mb-2">⚠️ Naive RAG の参照チャンク</h3>
+                <div class="space-y-2 text-xs">
+                    <div class="flex items-center gap-2"><span class="chunk-badge bg-red-900 text-red-300">フリーランス入居審査特例</span><span class="text-slate-500 ml-auto">dist: 0.3177</span></div>
+                    <div class="flex items-center gap-2"><span class="chunk-badge bg-red-900 text-red-300">フリーランス審査滞納トラブル</span><span class="text-slate-500 ml-auto">dist: 0.3383</span></div>
+                    <div class="flex items-center gap-2"><span class="chunk-badge bg-red-900 text-red-300">フリーランス・個人事業主特例ルール</span><span class="text-slate-500 ml-auto">dist: 0.3426</span></div>
+                    <div class="flex items-center gap-2"><span class="chunk-badge bg-red-900 text-red-300">埼玉支店-確定申告書年数緩和</span><span class="text-slate-500 ml-auto">dist: 0.3523</span></div>
+                </div>
+                <p class="text-[10px] text-red-400 mt-2">⚠️ 「埼玉支店」のチャンクはフリーランス審査とは無関係なドキュメント。ベクトル類似度だけで選定するため、別テーマが混入する。</p>
+            </div>
+            <!-- Hybrid RAG チャンク -->
+            <div class="bg-slate-950 border border-emerald-900/30 rounded-lg p-4">
+                <h3 class="text-xs font-bold text-emerald-400 mb-2">✅ Hybrid RAG の参照チャンク（RRF統合順）</h3>
+                <div class="space-y-2 text-xs">
+                    <div class="flex items-center gap-1 flex-wrap"><span class="chunk-badge bg-emerald-900 text-emerald-300">フリーランス審査滞納トラブル</span><span class="chunk-badge bg-emerald-900 text-emerald-400">vec#1</span><span class="chunk-badge bg-purple-900 text-purple-400">bm25#1</span><span class="chunk-badge bg-amber-900 text-amber-400">rrf=0.032787</span></div>
+                    <div class="flex items-center gap-1 flex-wrap"><span class="chunk-badge bg-emerald-900 text-emerald-300">フリーランス・個人事業主特例ルール</span><span class="chunk-badge bg-emerald-900 text-emerald-400">vec#2</span><span class="chunk-badge bg-purple-900 text-purple-400">bm25#2</span><span class="chunk-badge bg-amber-900 text-amber-400">rrf=0.032258</span></div>
+                    <div class="flex items-center gap-1 flex-wrap"><span class="chunk-badge bg-emerald-900 text-emerald-300">入居者年収基準・家賃割安率ガイド</span><span class="chunk-badge bg-emerald-900 text-emerald-400">vec#3</span><span class="chunk-badge bg-purple-900 text-purple-400">bm25#3</span><span class="chunk-badge bg-amber-900 text-amber-400">rrf=0.031746</span></div>
+                </div>
+                <p class="text-[10px] text-emerald-400 mt-2">✅ メタフィルタで対象テナントの有効規定のみを抽出。RRF統合でvec/bm25の双方で高順位だったチャンクが上位に集まる。</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- 処理時間の比較 -->
+    <div class="bg-slate-900 border border-slate-800 rounded-xl p-6">
+        <h2 class="text-base font-bold text-blue-400 mb-4">④ 合計処理時間の比較</h2>
+        <div class="overflow-x-auto mb-3">
+            <table class="w-full text-xs">
+                <thead><tr class="border-b border-slate-700"><th class="text-left py-1.5 px-2 text-slate-500">パイプライン</th><th class="text-center py-1.5 px-2 text-slate-500">合計時間</th><th class="text-center py-1.5 px-2 text-slate-500">追加ステップ分</th></tr></thead>
+                <tbody class="text-slate-300">
+                    <tr class="border-b border-slate-800/50"><td class="py-1.5 px-2 font-medium">Naive RAG</td><td class="text-center py-1.5 px-2">9.98秒</td><td class="text-center py-1.5 px-2">—</td></tr>
+                    <tr><td class="py-1.5 px-2 font-medium">Hybrid RAG</td><td class="text-center py-1.5 px-2 text-emerald-400">10.07秒</td><td class="text-center py-1.5 px-2 text-emerald-400">+0.09秒（メタフィルタ+BM25+RRF）</td></tr>
+                </tbody>
+            </table>
+        </div>
+        <p class="text-xs text-slate-400">💡 Hybrid RAG は追加の処理ステップ（メタフィルタ、BM25、RRF）があるが、合計時間は Naive RAG とほぼ同等。これは追加ステップがミリ秒〜数十ミリ秒レベルで軽量だから。検索精度を大幅に向上させながら、実用上の遅延は negligible。</p>
+    </div>
+
+</section>

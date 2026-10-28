@@ -6,7 +6,7 @@
     <title>Enterprise Hybrid RAG Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <link rel="stylesheet" href="/static/css/dashboard.css?v=3">
+    <link rel="stylesheet" href="/static/css/dashboard.css?v=4">
     <script>
         tailwind.config = { darkMode: 'class' }
     </script>
@@ -52,6 +52,7 @@
         <button data-tab="compare" class="tab-btn active px-4 py-3 text-sm font-medium border-b-2 border-blue-500 text-blue-400">🔍 単純RAG vs ハイブリッドRAG</button>
         <button data-tab="summary" class="tab-btn px-4 py-3 text-sm font-medium border-b-2 border-transparent text-slate-500 hover:text-slate-300 transition">📊 日次要約バッチ（BPRデモ）</button>
         <button data-tab="browser" class="tab-btn px-4 py-3 text-sm font-medium border-b-2 border-transparent text-slate-500 hover:text-slate-300 transition">📦 データブラウザ</button>
+        <button data-tab="pipeline" class="tab-btn px-4 py-3 text-sm font-medium border-b-2 border-transparent text-slate-500 hover:text-slate-300 transition">🔬 検索パイプライン詳細</button>
         <button data-tab="arch" class="tab-btn px-4 py-3 text-sm font-medium border-b-2 border-transparent text-slate-500 hover:text-slate-300 transition">🏗️ アーキテクチャ設計思想</button>
     </div>
 </nav>
@@ -100,6 +101,14 @@
                         <span id="naive-meta" class="text-xs text-slate-500"></span>
                     </div>
                 </div>
+                <!-- ビジネス影響サマリーバナー -->
+                <div id="naive-business-summary" class="business-summary-banner business-summary-banner--risk hidden">
+                    <div class="business-summary-icon">❌</div>
+                    <div class="business-summary-content">
+                        <div class="business-summary-label">業務リスク</div>
+                        <div class="business-summary-text">他支店・旧年度の規程が混入し、誤審査の可能性あり</div>
+                    </div>
+                </div>
                 <div id="naive-body" class="p-4 space-y-3 comparison-panel-body">
                     <p class="text-slate-600 text-sm italic">検索を実行すると結果が表示されます</p>
                 </div>
@@ -111,6 +120,14 @@
                     <div class="flex items-center gap-2">
                         <span class="pipeline-comparison-badge badge-hybrid">フィルタ✓ / BM25✓ / RRF✓</span>
                         <span id="hybrid-meta" class="text-xs text-slate-500"></span>
+                    </div>
+                </div>
+                <!-- ビジネス影響サマリーバナー -->
+                <div id="hybrid-business-summary" class="business-summary-banner business-summary-banner--safe hidden">
+                    <div class="business-summary-icon">⭕</div>
+                    <div class="business-summary-content">
+                        <div class="business-summary-label">業務適合</div>
+                        <div class="business-summary-text">A社・2025年以降の現行規程のみを厳密に参照</div>
                     </div>
                 </div>
                 <div id="hybrid-body" class="p-4 space-y-3 comparison-panel-body">
@@ -181,7 +198,9 @@
         </div>
     </section>
 
-    <!-- Tab 4: アーキテクチャ設計思想 -->
+    {% include 'pipeline_tab.html' %}
+
+    <!-- Tab 5: アーキテクチャ設計思想 -->
     <section id="tab-arch" class="tab-content hidden space-y-6">
         <div class="bg-slate-900 border border-slate-800 rounded-xl p-6">
             <h2 class="text-base font-bold text-blue-400 mb-4">① なぜOllama（推論層）をURL分離した疎結合構成にしているか</h2>
@@ -271,6 +290,6 @@
 <!-- トースト -->
 <div id="toast" class="toast"></div>
 
-<script src="/static/js/dashboard.js?v=4"></script>
+<script src="/static/js/dashboard.js?v=5"></script>
 </body>
 </html>

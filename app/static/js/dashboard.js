@@ -5,6 +5,10 @@
 
 // ===== ユーティリティ =====
 
+function formatSeconds(ms) {
+    return (ms / 1000).toFixed(2) + 's';
+}
+
 function getSelectedModel() {
     const sel = document.getElementById('model-select');
     return sel.value || null;
@@ -186,8 +190,8 @@ function initTabs() {
 
 // 各エンジンのパイプライン状態を保持
 const streamState = {
-    naive: { steps: [], answerChunks: [], done: false },
-    hybrid: { steps: [], answerChunks: [], done: false },
+    naive: { steps: [], answerChunks: [], done: false, pollutionKeywords: [] },
+    hybrid: { steps: [], answerChunks: [], done: false, pollutionKeywords: [] },
 };
 
 function initCompareTab() {
@@ -204,14 +208,18 @@ async function runCompareStream() {
     btn.innerHTML = '<span>⏳ 処理中...</span>';
 
     // 状態をリセット
-    streamState.naive = { steps: [], answerChunks: [], done: false };
-    streamState.hybrid = { steps: [], answerChunks: [], done: false };
+    streamState.naive = { steps: [], answerChunks: [], done: false, pollutionKeywords: [] };
+    streamState.hybrid = { steps: [], answerChunks: [], done: false, pollutionKeywords: [] };
     stepTimers = { naive: 0, hybrid: 0 };
 
     const naiveBody = document.getElementById('naive-body');
     const hybridBody = document.getElementById('hybrid-body');
     naiveBody.innerHTML = '';
     hybridBody.innerHTML = '';
+
+    // ビジネス影響サマリーバナーを隠す
+    document.getElementById('naive-business-summary').classList.add('hidden');
+    document.getElementById('hybrid-business-summary').classList.add('hidden');
 
     // ⏳ ブラウザが描画されるまで少し待ってからフェードイン（setTimeoutで同期実行回避）
     setTimeout(() => {
@@ -334,6 +342,14 @@ function handleSSEEvent(event, naiveBody, hybridBody) {
         }
 
         case 'chunk_preview': {
+            // 汚染キーワードを収集（Naive RAG用）
+            if (engine === 'naive' && event.chunks) {
+                event.chunks.forEach(c => {
+                    if (c.pollution_keywords && c.pollution_keywords.length > 0) {
+                        streamState.naive.pollutionKeywords.push(...c.pollution_keywords);
+                    }
+                });
+            }
             renderChunkPreviewAccordion(container, event.chunks, engine);
             break;
         }
@@ -351,7 +367,7 @@ function handleSSEEvent(event, naiveBody, hybridBody) {
             removeLLMLoadingSpinner(engine);
             state.answerChunks = [event.answer];
             finalizeAnswerDisplay(container, engine, event.answer);
-            document.getElementById(metaId).textContent = `推論 ${event.inference_time_ms}ms`;
+            document.getElementById(metaId).textContent = `推論 ${formatSeconds(event.inference_time_ms)}`;
             break;
         }
 
@@ -359,6 +375,13 @@ function handleSSEEvent(event, naiveBody, hybridBody) {
             state.done = true;
             hideLoadingSpinner(engine);
             removeLLMLoadingSpinner(engine);
+
+            // ビジネス影響サマリーバナーを表示
+            if (engine === 'naive') {
+                document.getElementById('naive-business-summary').classList.remove('hidden');
+            } else {
+                document.getElementById('hybrid-business-summary').classList.remove('hidden');
+            }
             // 累積した回答があれば確定表示（既存エリアも確実に上書き）
             const accumulatedAnswer = state.answerChunks.join('');
             console.log(`[SSE ${engine}] done - accumulatedAnswer length=${accumulatedAnswer.length}`);
@@ -376,7 +399,7 @@ function handleSSEEvent(event, naiveBody, hybridBody) {
             // 最終更新時間計算（LLMステップの時間のみ）
             const llmStep = state.steps.find(s => s.step_id === 'llm');
             const totalMs = llmStep ? (llmStep.duration_ms || 0) : state.steps.reduce((sum, s) => sum + (s.duration_ms || 0), 0);
-            document.getElementById(metaId).textContent = `推論 ${totalMs}ms`;
+            document.getElementById(metaId).textContent = `推論 ${formatSeconds(totalMs)}`;
             updatePipelineFooter(container, engine);
             break;
         }
@@ -440,6 +463,21 @@ function updateStepRowInContainer(container, engine, stepId, status, event) {
     const cfg = STATUS_CONFIG[status] || STATUS_CONFIG.done;
 
     let detailHtml = event.detail ? `<div class="pipeline-step-detail">${escapeHtml(event.detail)}</div>` : '';
+    
+    // BM25ステップの場合はキーワードバッジを追加
+    if (stepId === 'bm25' && event.query_keywords && event.query_keywords.length > 0) {
+        const keywords = event.query_keywords.slice(0, 8);
+        let badgesHtml = '<div class="mt-1 flex flex-wrap gap-1">';
+        keywords.forEach(kw => {
+            badgesHtml += `<span class="bm25-keyword-badge">${escapeHtml(kw)}</span>`;
+        });
+        if (event.query_keywords.length > 8) {
+            badgesHtml += `<span class="bm25-keyword-badge">+${event.query_keywords.length - 8}</span>`;
+        }
+        badgesHtml += '</div>';
+        detailHtml += badgesHtml;
+    }
+    
     let countHtml = '';
     if (event.count_before !== undefined && event.count_after !== undefined) {
         countHtml = `
@@ -449,7 +487,7 @@ function updateStepRowInContainer(container, engine, stepId, status, event) {
             <span class="count-after">${event.count_after}</span>
         </div>`;
     }
-    let durationHtml = event.duration_ms > 0 ? `<div class="pipeline-duration">${event.duration_ms}ms</div>` : '';
+    let durationHtml = event.duration_ms > 0 ? `<div class="pipeline-duration">${formatSeconds(event.duration_ms)}</div>` : '';
 
     row.className = `pipeline-step-row status-${status}`;
     row.innerHTML = `
@@ -473,7 +511,7 @@ function updatePipelineFooterForStep(engine, ms) {
     stepTimers[engine] += ms;
     const footer = document.getElementById(`footer-${engine}`);
     if (footer) {
-        footer.textContent = `合計処理時間: ${stepTimers[engine]}ms`;
+        footer.textContent = `合計処理時間: ${formatSeconds(stepTimers[engine])}`;
     }
 }
 
@@ -484,9 +522,39 @@ function updatePipelineFooter(container, engine) {
 // 回答ストリーミング更新
 const answerAreaState = { naive: null, hybrid: null };
 
+// ===== 汚染ハイライトユーティリティ =====
+
+function escapeRegex(str) {
+    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function highlightPollutionKeywords(text, keywords) {
+    if (!keywords || keywords.length === 0) return text;
+    const uniqueKeywords = [...new Set(keywords)].filter(k => k && k.length >= 2);
+    if (uniqueKeywords.length === 0) return text;
+    // 長いキーワードから優先（部分一致防止）
+    uniqueKeywords.sort((a, b) => b.length - a.length);
+    uniqueKeywords.forEach(keyword => {
+        const regex = new RegExp(`(${escapeRegex(keyword)})`, 'g');
+        text = text.replace(regex, '<mark class="pollution-marker">$1</mark>');
+    });
+    return text;
+}
+
+function applyPollutionHighlightIfNeeded(text, engine) {
+    if (engine === 'naive') {
+        const keywords = streamState.naive.pollutionKeywords || [];
+        return highlightPollutionKeywords(text, keywords);
+    }
+    return text;
+}
+
 function updateAnswerStream(container, engine, text, inferenceMs) {
     let areaId = `answer-area-${engine}`;
     let area = document.getElementById(areaId);
+
+    // 汚染ハイライトを適用
+    const displayText = applyPollutionHighlightIfNeeded(text, engine);
 
     if (!area) {
         // 回答エリアを初めて作成
@@ -494,16 +562,16 @@ function updateAnswerStream(container, engine, text, inferenceMs) {
         const textClass = engine === 'naive' ? 'text-slate-300' : 'text-emerald-100';
         const div = document.createElement('div');
         div.className = 'mt-3';
-        div.innerHTML = `<div id="${areaId}" class="answer-area bg-slate-950 rounded-lg p-3 text-sm ${textClass} overflow-y-auto" style="border: 1px solid ${engine === 'naive' ? 'rgba(30,41,59,1)' : 'rgba(6,78,59,0.3)'}"><div class="answer-text answer-markdown">${renderMarkdown(text)}</div><span class="answer-streaming-cursor"></span></div>`;
+        div.innerHTML = `<div id="${areaId}" class="answer-area bg-slate-950 rounded-lg p-3 text-sm ${textClass} overflow-y-auto" style="border: 1px solid ${engine === 'naive' ? 'rgba(30,41,59,1)' : 'rgba(6,78,59,0.3)'}"><div class="answer-text answer-markdown">${renderMarkdown(displayText)}</div><span class="answer-streaming-cursor"></span></div>`;
         container.appendChild(div);
 
         // メタ更新
         const metaId = engine === 'naive' ? 'naive-meta' : 'hybrid-meta';
-        document.getElementById(metaId).textContent = `推論中 ${inferenceMs}ms`;
+        document.getElementById(metaId).textContent = `推論中 ${formatSeconds(inferenceMs)}`;
     } else {
         const textSpan = area.querySelector('.answer-text');
         if (textSpan) {
-            textSpan.innerHTML = renderMarkdown(text);
+            textSpan.innerHTML = renderMarkdown(displayText);
         }
     }
 }
@@ -512,7 +580,7 @@ function updateAnswerStream(container, engine, text, inferenceMs) {
 function renderFinalAnswer(container, engine, answer, inferenceMs) {
     removeCursor(container, engine);
     const metaId = engine === 'naive' ? 'naive-meta' : 'hybrid-meta';
-    document.getElementById(metaId).textContent = `推論 ${inferenceMs}ms`;
+    document.getElementById(metaId).textContent = `推論 ${formatSeconds(inferenceMs)}`;
 }
 
 // カーソル削除
@@ -573,6 +641,9 @@ function finalizeAnswerDisplay(container, engine, answer) {
     const areaId = `answer-area-${engine}`;
     let area = document.getElementById(areaId);
     
+    // 汚染ハイライトを適用
+    const displayAnswer = applyPollutionHighlightIfNeeded(answer, engine);
+    
     const borderClass = engine === 'naive' ? 'border-slate-800' : 'border-emerald-900/30';
     const textClass = engine === 'naive' ? 'text-slate-300' : 'text-emerald-100';
 
@@ -580,16 +651,16 @@ function finalizeAnswerDisplay(container, engine, answer) {
         // 既存の回答エリアを確定スタイルに切り替え
         const textSpan = area.querySelector('.answer-text');
         if (textSpan) {
-            textSpan.innerHTML = renderMarkdown(answer);
+            textSpan.innerHTML = renderMarkdown(displayAnswer);
         } else {
-            area.innerHTML = `<div class="answer-text answer-markdown">${renderMarkdown(answer)}</div>`;
+            area.innerHTML = `<div class="answer-text answer-markdown">${renderMarkdown(displayAnswer)}</div>`;
         }
         area.className = `answer-area bg-slate-950 rounded-lg p-3 text-sm ${textClass} border ${borderClass} overflow-y-auto`;
     } else {
         // 回答エリアが存在しない場合は新規作成（ストリーミングが来なかった場合）
         const div = document.createElement('div');
         div.className = 'mt-3';
-        div.innerHTML = `<div id="${areaId}" class="answer-area bg-slate-950 rounded-lg p-3 text-sm ${textClass} border ${borderClass} overflow-y-auto"><div class="answer-text answer-markdown">${renderMarkdown(answer)}</div></div>`;
+        div.innerHTML = `<div id="${areaId}" class="answer-area bg-slate-950 rounded-lg p-3 text-sm ${textClass} border ${borderClass} overflow-y-auto"><div class="answer-text answer-markdown">${renderMarkdown(displayAnswer)}</div></div>`;
         container.appendChild(div);
     }
 }
@@ -598,7 +669,6 @@ function finalizeAnswerDisplay(container, engine, answer) {
 function renderChunkPreviewAccordion(container, chunks, engine) {
     let listEl = container.querySelector('.chunk-preview-list');
     const isNaive = engine === 'naive';
-    const borderColor = isNaive ? 'border-red-800/30' : 'border-emerald-800/30';
     const badgeColor = isNaive ? 'bg-red-900 text-red-300' : 'bg-emerald-900 text-emerald-300';
 
     let html = '<div class="mt-3 space-y-2">';
@@ -607,11 +677,25 @@ function renderChunkPreviewAccordion(container, chunks, engine) {
     chunks.forEach((c, i) => {
         const accordionId = `chunk-content-${engine}-${i}`;
         const arrowId = `arrow-chunk-${engine}-${i}`;
+        const hasPollution = !!c.pollution_reason;
 
-        html += `<div class="chunk-preview-card bg-slate-950 border ${borderColor} rounded-lg overflow-hidden">`;
+        // カードのボーダー色を汚染有無で分岐
+        let cardBorderClass = isNaive ? 'border-red-800/30' : 'border-emerald-800/30';
+        let pollutionClass = '';
+        if (hasPollution) {
+            cardBorderClass = 'border-red-700/60';
+            pollutionClass = ' has-pollution';
+        }
+
+        html += `<div class="chunk-preview-card bg-slate-950 border ${cardBorderClass} rounded-lg overflow-hidden${pollutionClass}">`;
         // ヘッダー（クリックで展開）
         html += `<div class="px-3 py-2 flex items-center gap-2 cursor-pointer hover:bg-slate-800/50 transition" onclick="toggleChunkPreview('${accordionId}', '${arrowId}')">`;
         html += `<span class="chunk-badge ${badgeColor}">${escapeHtml(c.title || '無題')}</span>`;
+
+        // 汚染バッジ
+        if (hasPollution) {
+            html += `<span class="pollution-badge">❌ 汚染チャンク：${escapeHtml(c.pollution_reason)}</span>`;
+        }
 
         // スコアバッジ
         if (c.distance !== undefined) {
@@ -706,6 +790,18 @@ function renderPipelineSteps(steps, container) {
         if (step.detail) {
             html += `<div class="pipeline-step-detail">${escapeHtml(step.detail)}</div>`;
         }
+        // BM25ステップの場合はキーワードバッジを追加
+        if (step.step_id === 'bm25' && step.query_keywords && step.query_keywords.length > 0) {
+            const keywords = step.query_keywords.slice(0, 8);
+            html += '<div class="mt-1 flex flex-wrap gap-1">';
+            keywords.forEach(kw => {
+                html += `<span class="bm25-keyword-badge">${escapeHtml(kw)}</span>`;
+            });
+            if (step.query_keywords.length > 8) {
+                html += `<span class="bm25-keyword-badge">+${step.query_keywords.length - 8}</span>`;
+            }
+            html += '</div>';
+        }
         html += '</div>';
         // カウントフロー
         if (step.count_before !== undefined && step.count_after !== undefined) {
@@ -718,14 +814,14 @@ function renderPipelineSteps(steps, container) {
         }
         // タイマー
         if (step.duration_ms > 0) {
-            html += `<div class="pipeline-duration">${step.duration_ms}ms</div>`;
+            html += `<div class="pipeline-duration">${formatSeconds(step.duration_ms)}</div>`;
         }
         html += '</div>';
     });
 
     // 合計時間フッター
     html += `<div class="pipeline-total-time text-right mt-2 text-[10px] text-slate-600">`;
-    html += `合計処理時間: ${totalMs}ms`;
+    html += `合計処理時間: ${formatSeconds(totalMs)}`;
     html += '</div>';
     html += '</div>';
 
@@ -738,7 +834,7 @@ function renderNaiveResult(result, container) {
         return;
     }
     document.getElementById('naive-meta').textContent =
-        `推論 ${result.inference_time_ms}ms`;
+        `推論 ${formatSeconds(result.inference_time_ms)}`;
 
     let html = '';
 
@@ -777,7 +873,7 @@ function renderHybridResult(result, container) {
         return;
     }
     document.getElementById('hybrid-meta').textContent =
-        `推論 ${result.inference_time_ms}ms / プロンプト ${result.prompt_length}文字`;
+        `推論 ${formatSeconds(result.inference_time_ms)} / プロンプト ${result.prompt_length}文字`;
 
     let html = '';
 
@@ -842,7 +938,7 @@ async function runSummary() {
 
         document.getElementById('summary-result').classList.remove('hidden');
         renderSummaryTable(data.answer, data.inference_time_ms);
-        showToast(`要約完了 (${data.inference_time_ms}ms)`);
+        showToast(`要約完了 (${formatSeconds(data.inference_time_ms)})`);
     } catch (e) {
         showToast('要約処理に失敗しました: ' + e.message, 'error');
     } finally {
@@ -863,7 +959,7 @@ function renderSummaryTable(rawAnswer, timeMs) {
     } catch { /* 構造化でない場合は raw表示にフォールバック */ }
 
     if (parsed && Array.isArray(parsed)) {
-        let html = `<p class="text-xs text-slate-500 mb-2">推論時間: ${timeMs}ms</p>`;
+        let html = `<p class="text-xs text-slate-500 mb-2">推論時間: ${formatSeconds(timeMs)}</p>`;
         html += '<table class="w-full text-sm border-collapse">';
         html += '<thead><tr class="border-b border-slate-700">';
         html += '<th class="text-left py-2 px-2 text-slate-400">メール</th>';
