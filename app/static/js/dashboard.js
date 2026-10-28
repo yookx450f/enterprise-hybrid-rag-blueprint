@@ -69,8 +69,9 @@ async function loadModelsForHost(host) {
                 opt.textContent = m;
                 modelSel.appendChild(opt);
               });
-              // デフォルトで completion 対応モデルを選ぶ
-            const pref = data.available_models.find(m => !m.includes('bge') && !m.includes('embed'));
+              // デフォルトで qwen3.6:27b を優先、見つからない場合は completion 対応モデルを選ぶ
+            const pref = data.available_models.find(m => m === 'qwen3.6:27b')
+                || data.available_models.find(m => !m.includes('bge') && !m.includes('embed'));
             if (pref) modelSel.value = pref;
         } else {
             modelSel.innerHTML = '<option value="">モデルがありません</option>';
@@ -90,8 +91,7 @@ async function initHostSelector() {
         for (const [alias, url] of Object.entries(data.hosts || {})) {
             const opt = document.createElement('option');
             opt.value = alias;
-            const hostPort = url.replace('http://', '').split(':')[0];
-            opt.textContent = `${alias} (${hostPort})`;
+            opt.textContent = alias;
             hostSel.appendChild(opt);
           }
 
@@ -101,8 +101,15 @@ async function initHostSelector() {
             loadModelsForHost(selectedHost);
           });
           
-        // 初期読み込み時にデフォルトホストのモデルを取得
-        await loadModelsForHost(null);
+        // デフォルトホストを rtx3090 に設定
+        if (data.hosts && data.hosts['rtx3090']) {
+            hostSel.value = 'rtx3090';
+            await initHealthCheck('rtx3090');
+            await loadModelsForHost('rtx3090');
+        } else {
+            // 初期読み込み時にデフォルトホストのモデルを取得
+            await loadModelsForHost(null);
+        }
       } catch (e) {
         console.warn('ホスト一覧取得失敗', e);
       }
@@ -119,8 +126,7 @@ async function initHealthCheck(host) {
 
         if (data.ollama_status === 'connected' && data.chromadb === 'connected') {
             dot.className = 'inline-block w-2.5 h-2.5 rounded-full bg-emerald-400';
-            const hostName = host || 'default';
-            text.textContent = `Ollama (${hostName}) + ChromaDB 接続OK`;
+            text.textContent = `Ollama + ChromaDB 接続OK`;
             text.className = 'text-emerald-400 text-sm';
           } else {
             dot.className = 'inline-block w-2.5 h-2.5 rounded-full bg-yellow-400 animate-pulse';
