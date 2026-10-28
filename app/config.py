@@ -8,10 +8,11 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     """Ollama, ChromaDB 接続用環境設定"""
 
-    OLLAMA_BASE_URL: str = "http://100.126.109.125:11434"
+    OLLAMA_BASE_URL: str = "http://host.docker.internal:11434"
+    OLLAMA_HOST_LOCAL: str = "http://host.docker.internal:11434"
     OLLAMA_HOST_M1MAX64GB: str = "http://100.126.109.125:11434"
     OLLAMA_HOST_RTX3090: str = "http://100.87.2.91:11434"
-    LLM_MODEL: str = "gemma4:31b"
+    LLM_MODEL: str = "gemma4:12b"
     EMBED_MODEL: str = "bge-m3"
     CHROMA_HOST: str = "chromadb"
     CHROMA_PORT: int = 8000
@@ -28,6 +29,7 @@ settings = Settings()
 # ─── LLMホストアリアスマップ ─────────────────────────────────
 
 OLLAMA_HOSTS: dict[str, str] = {
+    "local": settings.OLLAMA_HOST_LOCAL,
     "m1max64gb": settings.OLLAMA_HOST_M1MAX64GB,
     "rtx3090": settings.OLLAMA_HOST_RTX3090,
 }
